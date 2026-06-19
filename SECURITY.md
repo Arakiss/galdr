@@ -9,7 +9,17 @@ this before you record a session and before you share a recording or a distilled
 Design guarantees:
 
 - The raw span lives **only** under `~/.galdr` on the local machine.
-- galdr opens **no network connection**. Nothing is uploaded anywhere.
+- galdr makes **no external network egress**. Nothing is uploaded anywhere. The one
+  optional exception is the autonomous distiller (`distill --auto`, built with the
+  `mlx` feature), which talks **only to a loopback address** (`127.0.0.1`, `::1`,
+  `localhost`). This is enforced in code by `engine::validate_loopback`: a
+  non-loopback endpoint is a hard error, and the HTTP engine re-checks before every
+  request. There is no configuration that points the distiller off the machine.
+- The autonomous distiller treats the recorded span as **untrusted data**: it is
+  wrapped in an explicit delimiter that tells the model never to follow instructions
+  found inside, generation runs at a low temperature, the output is validated, and a
+  human is expected to review the skill before use. Prefer reviewing any
+  machine-generated skill before relying on it.
 - The sensor (`galdr hook`) never propagates an error to the agent session.
 
 galdr does not redact secrets from a span. If a recorded session touched a credential,
@@ -26,8 +36,8 @@ response within a few days.
 ## Scope
 
 In scope: anything that lets the sensor break or alter an agent session, corrupt a span,
-escape the local-only boundary (e.g. unexpected network egress), or write outside the
-documented `~/.galdr` and skills directories.
+escape the local-only boundary (e.g. unexpected network egress, or the distiller reaching
+a non-loopback host), or write outside the documented `~/.galdr` and skills directories.
 
 Out of scope (for now): a hostile local user with the same OS account (they already have
 filesystem access), and the sensitivity of data the operator chooses to record.

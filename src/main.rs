@@ -5,9 +5,11 @@
 //! raw lives only in `~/.galdr` and nothing leaves the machine.
 
 mod catalog;
+mod config;
 mod daemon;
 mod diff;
 mod distill;
+mod engine;
 mod ext;
 mod hook;
 mod ipc;
@@ -47,14 +49,21 @@ enum Commands {
 
     /// Distill a recording into a skill.
     ///
-    /// Without `--from`, generate the draft (scaffolding). With `--from <file>`,
-    /// install as the final skill the distillation the agent prepared in that file.
+    /// Without flags, generate the draft (scaffolding). With `--from <file>`,
+    /// install the distillation the agent prepared. With `--auto`, a local MLX
+    /// engine writes the finished skill (falling back to the draft if unavailable).
     Distill {
         /// rec_id of the recording to distill.
         id: String,
         /// Install the final SKILL.md from this file (distilled by the agent).
-        #[arg(long, value_name = "FILE")]
+        #[arg(long, value_name = "FILE", conflicts_with = "auto")]
         from: Option<PathBuf>,
+        /// Distill autonomously with a local MLX engine.
+        #[arg(long)]
+        auto: bool,
+        /// Engine for `--auto`: mlx-http, mlx-subprocess, or agent.
+        #[arg(long, value_name = "ENGINE", requires = "auto")]
+        engine: Option<String>,
     },
 
     /// List closed recordings.
@@ -133,7 +142,18 @@ fn main() {
             };
             exit_on_error(result);
         }
-        Commands::Distill { id, from } => exit_on_error(distill::distill(&id, from.as_deref())),
+        Commands::Distill {
+            id,
+            from,
+            auto,
+            engine,
+        } => {
+            if auto {
+                exit_on_error(distill::distill_auto(&id, engine.as_deref()))
+            } else {
+                exit_on_error(distill::distill(&id, from.as_deref()))
+            }
+        }
         Commands::List => exit_on_error(cmd_list()),
         Commands::Show { id } => exit_on_error(cmd_show(&id)),
         Commands::Skills => exit_on_error(cmd_skills()),

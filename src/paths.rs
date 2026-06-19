@@ -79,6 +79,11 @@ pub fn catalog_db() -> Result<PathBuf> {
     Ok(galdr_root()?.join("catalog.sqlite"))
 }
 
+/// Optional config file: `~/.galdr/config.json`.
+pub fn config_file() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("config.json"))
+}
+
 /// Skills root: `~/.agents/skills`.
 pub fn skills_root() -> Result<PathBuf> {
     Ok(home()?.join(".agents").join("skills"))
