@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-label="galdr — Record and Replay for agent skills">
+  <title>galdr — Record &amp; Replay for agent skills</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B0E14"/>
+      <stop offset="0.55" stop-color="#0E131C"/>
+      <stop offset="1" stop-color="#0A0D13"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4FD6C9"/>
+      <stop offset="1" stop-color="#8B7BF0"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#4FD6C9" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#4FD6C9" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- backdrop -->
+  <rect width="1200" height="360" rx="20" fill="url(#bg)"/>
+  <rect x="1" y="1" width="1198" height="358" rx="19" fill="none" stroke="#1B2330" stroke-width="1.5"/>
+
+  <!-- echo rings: a sound that repeats (galdr = a chanted spell) -->
+  <g transform="translate(196 180)" fill="none" stroke="url(#accent)">
+    <circle r="150" stroke-opacity="0.06" stroke-width="1.5"/>
+    <circle r="112" stroke-opacity="0.10" stroke-width="1.5"/>
+    <circle r="78"  stroke-opacity="0.16" stroke-width="1.5"/>
+  </g>
+  <circle cx="196" cy="180" r="120" fill="url(#halo)"/>
+
+  <!-- emblem: record once, replay — a play mark and its decaying echoes -->
+  <g transform="translate(196 180)" filter="url(#glow)">
+    <circle r="58" fill="none" stroke="url(#accent)" stroke-width="2.4" stroke-opacity="0.9"/>
+    <!-- recording dot fused with the leading play triangle -->
+    <path d="M -16 -30 L 34 0 L -16 30 Z" fill="url(#accent)"/>
+    <!-- decaying replay echoes -->
+    <path d="M 6 -22 L 44 0 L 6 22 Z" fill="#4FD6C9" fill-opacity="0.34"/>
+    <path d="M 26 -15 L 52 0 L 26 15 Z" fill="#8B7BF0" fill-opacity="0.20"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="372" y="172" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace"
+        font-size="132" font-weight="700" letter-spacing="2" fill="#EAF1F8">galdr</text>
+
+  <!-- runic signature: g a l d r in Elder Futhark, drawn as strokes (font-free) -->
+  <g transform="translate(376 232)" stroke="url(#accent)" stroke-width="3.2"
+     stroke-linecap="round" stroke-opacity="0.92" fill="none">
+    <!-- ᚷ gebo (g) -->
+    <g transform="translate(0 0)"><path d="M 0 0 L 26 34 M 26 0 L 0 34"/></g>
+    <!-- ᚨ ansuz (a) -->
+    <g transform="translate(46 0)"><path d="M 4 0 L 4 34 M 4 5 L 22 13 M 4 16 L 22 24"/></g>
+    <!-- ᛚ laguz (l) -->
+    <g transform="translate(92 0)"><path d="M 4 0 L 4 34 M 4 0 L 20 10"/></g>
+    <!-- ᛞ dagaz (d) -->
+    <g transform="translate(122 0)"><path d="M 2 0 L 2 34 M 26 0 L 26 34 M 2 0 L 26 34 M 26 0 L 2 34"/></g>
+    <!-- ᚱ raido (r) -->
+    <g transform="translate(168 0)"><path d="M 4 0 L 4 34 M 4 0 L 20 6 L 4 16 M 8 16 L 22 34"/></g>
+  </g>
+
+  <!-- tagline -->
+  <text x="600" y="276" font-family="ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace"
+        font-size="27" font-weight="500" letter-spacing="0.5" fill="#8DA0B5">Record &amp; Replay for agent skills</text>
+
+  <!-- epigraph -->
+  <text x="600" y="312" font-family="Georgia, 'Times New Roman', serif" font-size="19"
+        font-style="italic" fill="#5C6E84">« the deed done once, the agent can sing again »</text>
+
+  <!-- local-first mark -->
+  <text x="1162" y="40" text-anchor="end" font-family="ui-monospace, Menlo, monospace"
+        font-size="15" letter-spacing="1.5" fill="#3D4B5C">LOCAL-FIRST</text>
+</svg>
