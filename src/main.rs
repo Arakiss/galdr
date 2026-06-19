@@ -10,6 +10,7 @@ mod hook;
 mod paths;
 mod record;
 mod span;
+mod summary;
 
 use std::path::PathBuf;
 
