@@ -1,0 +1,81 @@
+# Dependabot configuration for galdr.
+#
+# Design:
+#   - cargo updates split into two groups so reviews map to risk class:
+#       * pinned / substrate deps — every bump must pass the full feature
+#         matrix (default + mlx) and the sensor-contract integration tests.
+#       * plumbing (caret-ranged) — patch/minor bumps are mostly free.
+#   - GitHub Actions get weekly rollups — release cadence is low enough that
+#     daily churn is noise.
+
+version: 2
+
+updates:
+  # -----------------------------------------------------------------------
+  # Rust crate
+  # -----------------------------------------------------------------------
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "cargo"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      # Substrate deps that gate behavior: the daemon, the catalog, the TUI,
+      # and the async runtime. A bump here ships only after the full feature
+      # matrix is green. ratatui is pinned (=0.30.1) in Cargo.toml.
+      substrate:
+        applies-to: version-updates
+        patterns:
+          - "ratatui"
+          - "rusqlite"
+          - "tokio"
+          - "reqwest"
+      # Plumbing deps on caret ranges. Patch + minor together; majors always
+      # break out into their own PR.
+      plumbing:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+        patterns:
+          - "serde"
+          - "serde_json"
+          - "anyhow"
+          - "clap"
+          - "time"
+          - "ulid"
+          - "directories"
+
+  # -----------------------------------------------------------------------
+  # GitHub Actions
+  # -----------------------------------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      actions:
+        applies-to: version-updates
+        update-types:
+          - "patch"
+          - "minor"
+          - "major"

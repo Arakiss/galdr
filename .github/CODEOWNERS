@@ -1,0 +1,39 @@
+# Code owners for galdr.
+#
+# Syntax: https://docs.github.com/en/repositories/managing-your-repositories-settings-and-customizations/customizing-your-repository/about-code-owners
+#
+# galdr is maintained by a single person. This file exists so GitHub
+# auto-requests a review on PRs touching the load-bearing invariants, and so
+# branch-protection rules with "require review from code owners" cannot be
+# bypassed for those paths.
+#
+# Ordering matters: later, more-specific rules override earlier ones.
+
+# --- Default owner for everything not matched below ------------------------
+*                                 @Arakiss
+
+# --- Load-bearing invariants -----------------------------------------------
+# The sensor must never break the agent session. The distiller must never
+# reach off the loopback. Any edit here is an invariant-surface change.
+/src/hook.rs                       @Arakiss
+/src/main.rs                       @Arakiss
+/src/ext.rs                        @Arakiss
+/src/engine.rs                     @Arakiss
+/src/daemon.rs                     @Arakiss
+/src/ipc.rs                        @Arakiss
+/src/catalog.rs                    @Arakiss
+
+# --- Build, CI, release plumbing -------------------------------------------
+/.github/workflows/                @Arakiss
+/release-please-config.json        @Arakiss
+/.release-please-manifest.json     @Arakiss
+/deny.toml                         @Arakiss
+/Cargo.toml                        @Arakiss
+/Cargo.lock                        @Arakiss
+/rust-toolchain.toml               @Arakiss
+
+# --- Governance docs -------------------------------------------------------
+/SECURITY.md                       @Arakiss
+/CODE_OF_CONDUCT.md                @Arakiss
+/CONTRIBUTING.md                   @Arakiss
+/.github/CODEOWNERS                @Arakiss

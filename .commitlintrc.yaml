@@ -1,0 +1,68 @@
+extends:
+  - "@commitlint/config-conventional"
+
+# Project-specific overrides below.
+rules:
+  # Types we accept.
+  type-enum:
+    - 2
+    - always
+    - - feat
+      - fix
+      - chore
+      - docs
+      - refactor
+      - perf
+      - test
+      - build
+      - ci
+      - revert
+      - security
+
+  # Scope is optional but, when present, must be one of galdr's modules or one
+  # of these cross-cutting scopes.
+  scope-enum:
+    - 2
+    - always
+    - - paths
+      - span
+      - record
+      - hook
+      - sensor
+      - ext
+      - summary
+      - catalog
+      - ipc
+      - daemon
+      - tui
+      - diff
+      - parametrize
+      - distill
+      - engine
+      - config
+      - cli
+      - docs
+      - ci
+      - deps
+      - release
+      - security
+      - examples
+
+  # Subject: imperative, ≤72 chars.
+  subject-case:
+    - 2
+    - never
+    - - "sentence-case"
+      - "start-case"
+      - "pascal-case"
+      - "upper-case"
+  subject-empty: [2, never]
+  subject-full-stop: [2, never, "."]
+  header-max-length: [2, always, 72]
+
+  # Blank line between subject and body (conventional default). Dependabot
+  # bodies include long generated URLs, so do not reject on body wrapping.
+  body-leading-blank: [2, always]
+  footer-leading-blank: [2, always]
+  body-max-line-length: [0]
+  footer-max-line-length: [0]

@@ -1,0 +1,87 @@
+name: Bug report
+description: Something in galdr behaves incorrectly or crashes.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. A few ground rules before you continue:
+
+        - **Security issues do not go here.** If you suspect the sensor can
+          break an agent session, unexpected network egress, the distiller
+          reaching a non-loopback host, or a write outside `~/.galdr` and the
+          skills directory (see `SECURITY.md` §"Scope"), use a
+          [private security advisory](https://github.com/Arakiss/galdr/security/advisories/new)
+          instead.
+        - **A sensor that breaks the session is the highest-priority bug.**
+          `galdr hook` must always exit 0. If you saw it propagate a failure
+          into the agent, say so up front — it short-circuits triage.
+
+  - type: input
+    id: galdr-version
+    attributes:
+      label: galdr version
+      description: Output of `galdr --version` (commit hash if built from source).
+      placeholder: "0.2.0 (c1a0b45)"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.5 / Ubuntu 24.04 / …"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Affected surface
+      description: Which part of galdr misbehaves?
+      multiple: true
+      options:
+        - Sensor (galdr hook)
+        - Recording lifecycle (rec start/stop)
+        - Daemon + IPC
+        - SQLite catalog (list/show/skills/reindex)
+        - TUI
+        - diff / parametrize
+        - distill (draft or --auto / MLX)
+        - Docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >-
+        Minimal commands and the recorded events (or span) that trigger the
+        bug. Paste output verbatim — do not paraphrase.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: invariants
+    attributes:
+      label: Invariant check
+      options:
+        - label: This bug makes `galdr hook` exit non-zero or otherwise break the agent session (if yes, this is treated as a high-priority regression).
+        - label: This bug involves the distiller reaching a non-loopback host.

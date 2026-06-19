@@ -1,0 +1,66 @@
+name: Feature request
+description: Propose a new capability or tooling addition for galdr.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please read `CONTRIBUTING.md` §Ground rules and the
+        README §"Why tool calls, not pixels".
+
+        Two non-goals: requests that let the sensor block or alter a tool call
+        (it only ever observes), and requests that give the core network egress
+        beyond the loopback-only optional distiller, will be closed.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: >-
+        What use case is currently awkward or impossible? Frame the problem,
+        not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >-
+        What would you add or change? If it touches the sensor, explain how it
+        preserves the always-exit-0 contract. If it touches the distiller,
+        explain how it stays loopback-only.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Layer
+      options:
+        - Sensor / recording
+        - Daemon / IPC
+        - Catalog
+        - TUI
+        - diff / parametrize
+        - distill / engine
+        - CLI ergonomics
+        - Docs
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you think about, and why did you reject it?
+
+  - type: checkboxes
+    id: contract
+    attributes:
+      label: Contract checks
+      options:
+        - label: This proposal keeps the sensor an observer that always exits 0.
+        - label: This proposal does not give the core network egress beyond the loopback-only optional distiller.
+        - label: If this is a breaking change to a CLI flag, the IPC protocol, or the on-disk layout, I acknowledge it requires a minor bump (pre-1.0) and migration notes.

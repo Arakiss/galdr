@@ -1,1 +1,14 @@
 /target
+**/*.rs.bk
+Cargo.lock.bak
+
+# local state (galdr keeps everything under ~/.galdr, never in the repo)
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
