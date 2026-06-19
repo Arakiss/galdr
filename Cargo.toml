@@ -1,0 +1,30 @@
+[package]
+name = "galdr"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Record & Replay for agent skills — capture a session's tool calls and distill them into a reproducible skill. Local-first."
+readme = "README.md"
+repository = "https://github.com/Arakiss/galdr"
+authors = ["Petru Arakiss <petruarakiss@gmail.com>"]
+keywords = ["agent", "skills", "record", "replay", "automation"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive"] }
+directories = "6.0.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+time = { version = "0.3.49", features = ["formatting"] }
+ulid = "1.2.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+strip = "symbols"
+# NOTE: do not set `panic = "abort"`. The sensor (`galdr hook`) relies on
+# `std::panic::catch_unwind` to guarantee it always exits 0 and never breaks the
+# agent session. Aborting on panic would defeat that contract.
