@@ -6,10 +6,12 @@
 
 mod catalog;
 mod daemon;
+mod diff;
 mod distill;
 mod ext;
 mod hook;
 mod ipc;
+mod parametrize;
 mod paths;
 mod record;
 mod span;
@@ -70,6 +72,25 @@ enum Commands {
     /// Open the terminal UI to browse recordings, inspect spans, and audit skills.
     Tui,
 
+    /// Diff two recordings of the same task to find constants and parameters.
+    Diff {
+        /// rec_id of the first recording.
+        a: String,
+        /// rec_id of the second recording.
+        b: String,
+    },
+
+    /// Parametrize two recordings into a skill whose varying inputs are named.
+    Parametrize {
+        /// rec_id of the first recording.
+        a: String,
+        /// rec_id of the second recording.
+        b: String,
+        /// Write the parametrized SKILL.md instead of just printing the report.
+        #[arg(long)]
+        emit: bool,
+    },
+
     /// Rebuild the SQLite catalog from the spans and recordings on disk.
     Reindex,
 
@@ -117,6 +138,10 @@ fn main() {
         Commands::Show { id } => exit_on_error(cmd_show(&id)),
         Commands::Skills => exit_on_error(cmd_skills()),
         Commands::Tui => exit_on_error(tui::run()),
+        Commands::Diff { a, b } => exit_on_error(cmd_diff(&a, &b)),
+        Commands::Parametrize { a, b, emit } => {
+            exit_on_error(parametrize::parametrize(&a, &b, emit))
+        }
         Commands::Reindex => exit_on_error(cmd_reindex()),
         Commands::Daemon { detach } => exit_on_error(daemon::run(detach)),
     }
@@ -164,6 +189,12 @@ fn cmd_skills() -> anyhow::Result<()> {
         from_db(catalog::list_skills).unwrap_or_default()
     };
     print_skills(&skills);
+    Ok(())
+}
+
+fn cmd_diff(a: &str, b: &str) -> anyhow::Result<()> {
+    let report = diff::compute(a, b)?;
+    print!("{}", diff::render_report(&report));
     Ok(())
 }
 
