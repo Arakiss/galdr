@@ -137,10 +137,10 @@ pub fn list() -> Result<()> {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(rec) = serde_json::from_str::<Recording>(&contents) {
-                    recordings.push(rec);
-                }
+            if let Ok(contents) = std::fs::read_to_string(&path)
+                && let Ok(rec) = serde_json::from_str::<Recording>(&contents)
+            {
+                recordings.push(rec);
             }
         }
     }

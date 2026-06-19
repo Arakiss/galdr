@@ -85,14 +85,14 @@ pub fn run() -> Result<()> {
     ext::NoopExt.record(&event);
 
     // Capture the session transcript once, from the first event.
-    if active.transcript_path.is_none() {
-        if let Some(transcript_path) = input.transcript_path {
-            let updated = record::ActiveRec {
-                transcript_path: Some(transcript_path),
-                ..active
-            };
-            let _ = record::write_active(&updated);
-        }
+    if active.transcript_path.is_none()
+        && let Some(transcript_path) = input.transcript_path
+    {
+        let updated = record::ActiveRec {
+            transcript_path: Some(transcript_path),
+            ..active
+        };
+        let _ = record::write_active(&updated);
     }
     Ok(())
 }

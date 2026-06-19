@@ -14,6 +14,7 @@ mod paths;
 mod record;
 mod span;
 mod summary;
+mod tui;
 
 use std::path::PathBuf;
 
@@ -66,6 +67,9 @@ enum Commands {
     /// List installed skills and their provenance.
     Skills,
 
+    /// Open the terminal UI to browse recordings, inspect spans, and audit skills.
+    Tui,
+
     /// Rebuild the SQLite catalog from the spans and recordings on disk.
     Reindex,
 
@@ -112,6 +116,7 @@ fn main() {
         Commands::List => exit_on_error(cmd_list()),
         Commands::Show { id } => exit_on_error(cmd_show(&id)),
         Commands::Skills => exit_on_error(cmd_skills()),
+        Commands::Tui => exit_on_error(tui::run()),
         Commands::Reindex => exit_on_error(cmd_reindex()),
         Commands::Daemon { detach } => exit_on_error(daemon::run(detach)),
     }
@@ -182,10 +187,10 @@ fn from_db<T, F>(query: F) -> Option<T>
 where
     F: Fn(&rusqlite::Connection) -> anyhow::Result<T>,
 {
-    if let Ok(conn) = catalog::open_readonly() {
-        if let Ok(value) = query(&conn) {
-            return Some(value);
-        }
+    if let Ok(conn) = catalog::open_readonly()
+        && let Ok(value) = query(&conn)
+    {
+        return Some(value);
     }
     let conn = catalog::open_in_memory_indexed().ok()?;
     query(&conn).ok()
