@@ -8,6 +8,45 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-19
+
+Phase 1 — the queryable, browsable substrate on top of the Phase 0 loop.
+
+### Added
+
+- **Supervisor daemon** (`galdr daemon [--detach]`): a single-instance process that
+  indexes spans into the catalog over a chmod-0600 Unix socket (NDJSON IPC). It
+  self-heals a corrupt/missing index on startup, reconciles dropped notifications with
+  a poll-watcher, and shuts down gracefully on SIGTERM/SIGINT.
+- **SQLite catalog**: a rebuildable *index, never the truth*. It stores one-line step
+  summaries (no raw blobs), migrates idempotently via `PRAGMA user_version`, and
+  rebuilds from `spans/` + `recordings/` (+ skill provenance) with `galdr reindex`
+  (atomic temp-build-and-restore).
+- **New commands**: `galdr show <id>`, `galdr skills`, `galdr reindex`. `list`/`show`/
+  `skills` resolve daemon-first → read-only DB → in-memory disk scan, so the CLI works
+  with or without a daemon; `list` never regresses.
+- **Terminal UI** (`galdr tui`): three screens behind one `Catalog` trait — recordings
+  list, span inspector (with a raw `tool_input`/`tool_response` overlay flagged as
+  sensitive), and skill-provenance audit (marks orphans). A panic hook restores the
+  terminal.
+- **Diff-based parametrization** (`galdr diff <a> <b>`, `galdr parametrize <a> <b>
+  [--emit]`): a hand-rolled global aligner separates constants from parameters across
+  two runs of one task, with name inference and a High/Low confidence verdict. Low
+  confidence stamps a banner and alignment notes rather than forcing a 1:1 mapping.
+- **Autonomous distillation** (`galdr distill <id> --auto`): an optional local MLX
+  engine writes the finished skill from the span. Loopback-only (enforced by
+  `engine::validate_loopback`), the raw is wrapped in an untrusted-data delimiter,
+  output is validated, and it falls back cleanly to the Phase 0 draft. Gated behind the
+  `mlx` feature; configurable via `~/.galdr/config.json`.
+
+### Changed
+
+- The network guarantee is now stated precisely as **no external egress**: the optional
+  MLX distiller talks only to loopback, enforced in code.
+- The sensor now hints the daemon best-effort *after* the span append (the truth, first
+  and unconditional); it never waits on or depends on the daemon.
+- Minimum supported Rust version raised to 1.88 (ratatui 0.30.1).
+
 ## [0.1.0] - 2026-06-19
 
 Phase 0 — tracer bullet. Validates that the full loop closes: record → distill → replay.
@@ -30,5 +69,6 @@ Phase 0 — tracer bullet. Validates that the full loop closes: record → disti
   neutral no-op defaults; concrete integrations plug in from outside the repository.
 - Apache-2.0 license, README with a banner, and OSS hygiene docs.
 
-[Unreleased]: https://github.com/Arakiss/galdr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Arakiss/galdr/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Arakiss/galdr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Arakiss/galdr/releases/tag/v0.1.0
