@@ -1,0 +1,50 @@
+# Runs cargo-audit against the RustSec advisory database, independently of the
+# cargo-deny `advisories` job in ci.yml. This exists for two reasons:
+#
+#   1. A scheduled daily run catches advisories published after a PR merges,
+#      without waiting for the next code change to trip cargo-deny.
+#   2. When a new advisory lands, `actions-rust-lang/audit` opens a dedicated
+#      issue tagged with the advisory ID and a link to the RustSec page —
+#      cargo-deny only fails the job, it does not file issues.
+#
+# cargo-deny is the PR gate; cargo-audit is the scheduled watcher.
+
+name: audit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/audit.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/audit.yml"
+  schedule:
+    # Daily at 06:00 UTC — after the typical RustSec publish window.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Needed so the action can open / update an issue when a new advisory is
+      # found during a scheduled run. No effect on PR runs.
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/audit@v1
+        with:
+          # Do NOT use the `ignore` input here — suppressing an advisory is a
+          # security decision that belongs in a tracked PR editing deny.toml,
+          # not silently in this workflow file.
+          denyWarnings: true

@@ -1,0 +1,49 @@
+# OSSF Scorecard — https://github.com/ossf/scorecard
+#
+# Produces a third-party signal about the repo's supply-chain posture: branch
+# protection, token permissions, pinned deps, signed releases, SAST, dangerous
+# workflows, and so on. Results land in the Security tab (SARIF upload) and, for
+# public repos, in the public OpenSSF API consumed by deps.dev and the badge.
+
+name: scorecard
+
+on:
+  branch_protection_rule:
+  schedule:
+    # Weekly, Saturday 01:30 UTC — outside the week's CI rush.
+    - cron: "30 1 * * 6"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload the SARIF result to the Security tab.
+      security-events: write
+      # Required for `publish_results: true` — OIDC proves the run's identity.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: ${{ github.event.repository.private == false }}
+
+      - name: Upload SARIF to code scanning
+        if: ${{ github.event.repository.private == false }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
