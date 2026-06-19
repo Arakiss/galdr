@@ -4,9 +4,12 @@
 //! append-only span, and distills them into a reproducible skill. Local-first: the
 //! raw lives only in `~/.galdr` and nothing leaves the machine.
 
+mod catalog;
+mod daemon;
 mod distill;
 mod ext;
 mod hook;
+mod ipc;
 mod paths;
 mod record;
 mod span;
@@ -53,6 +56,25 @@ enum Commands {
 
     /// List closed recordings.
     List,
+
+    /// Show one recording with its steps.
+    Show {
+        /// rec_id of the recording.
+        id: String,
+    },
+
+    /// List installed skills and their provenance.
+    Skills,
+
+    /// Rebuild the SQLite catalog from the spans and recordings on disk.
+    Reindex,
+
+    /// Run the supervisor daemon (catalog indexer + control socket).
+    Daemon {
+        /// Start in the background (detached) instead of in the foreground.
+        #[arg(long)]
+        detach: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -87,7 +109,137 @@ fn main() {
             exit_on_error(result);
         }
         Commands::Distill { id, from } => exit_on_error(distill::distill(&id, from.as_deref())),
-        Commands::List => exit_on_error(record::list()),
+        Commands::List => exit_on_error(cmd_list()),
+        Commands::Show { id } => exit_on_error(cmd_show(&id)),
+        Commands::Skills => exit_on_error(cmd_skills()),
+        Commands::Reindex => exit_on_error(cmd_reindex()),
+        Commands::Daemon { detach } => exit_on_error(daemon::run(detach)),
+    }
+}
+
+/// Resolves catalog reads through three tiers, newest data first: the live daemon,
+/// then the read-only database, then an in-memory index built straight from disk.
+/// Whichever answers first wins; the disk tiers guarantee the CLI keeps working
+/// even with no daemon and no usable database file.
+fn cmd_list() -> anyhow::Result<()> {
+    let recordings = if let Ok(ipc::Response::Recordings { recordings }) =
+        ipc::query(&ipc::Request::ListRecordings)
+    {
+        recordings
+    } else if let Some(rows) = from_db(catalog::list_recordings) {
+        rows
+    } else {
+        // Last resort: never let `list` regress, even if SQLite is unusable.
+        return record::list();
+    };
+    print_recordings(&recordings);
+    Ok(())
+}
+
+fn cmd_show(id: &str) -> anyhow::Result<()> {
+    let detail = if let Ok(ipc::Response::Recording { recording }) =
+        ipc::query(&ipc::Request::ShowRecording { id: id.to_string() })
+    {
+        recording
+    } else {
+        from_db(|c| catalog::show_recording(c, id)).flatten()
+    };
+    match detail {
+        Some(detail) => print_recording_detail(&detail),
+        None => println!("recording {id} not found"),
+    }
+    Ok(())
+}
+
+fn cmd_skills() -> anyhow::Result<()> {
+    let skills = if let Ok(ipc::Response::Skills { skills }) = ipc::query(&ipc::Request::ListSkills)
+    {
+        skills
+    } else {
+        from_db(catalog::list_skills).unwrap_or_default()
+    };
+    print_skills(&skills);
+    Ok(())
+}
+
+fn cmd_reindex() -> anyhow::Result<()> {
+    let stats = if let Ok(ipc::Response::Reindexed { stats }) = ipc::query(&ipc::Request::Reindex) {
+        stats
+    } else {
+        let mut conn = catalog::open()?;
+        catalog::reindex(&mut conn)?
+    };
+    println!(
+        "catalog rebuilt: {} recordings, {} steps, {} skills",
+        stats.recordings, stats.steps, stats.skills
+    );
+    Ok(())
+}
+
+/// Runs a catalog query against the read-only database, falling back to an
+/// in-memory index built from disk. Returns `None` only if neither can be opened.
+fn from_db<T, F>(query: F) -> Option<T>
+where
+    F: Fn(&rusqlite::Connection) -> anyhow::Result<T>,
+{
+    if let Ok(conn) = catalog::open_readonly() {
+        if let Ok(value) = query(&conn) {
+            return Some(value);
+        }
+    }
+    let conn = catalog::open_in_memory_indexed().ok()?;
+    query(&conn).ok()
+}
+
+fn print_recordings(recordings: &[catalog::RecordingRow]) {
+    if recordings.is_empty() {
+        println!("(no recordings yet — use `galdr rec start <name>`)");
+        return;
+    }
+    for rec in recordings {
+        let mark = if rec.distilled { "✓" } else { " " };
+        println!(
+            "{} {}  {:<20}  {} steps  {}",
+            mark, rec.rec_id, rec.name, rec.steps, rec.started_at
+        );
+    }
+}
+
+fn print_recording_detail(detail: &catalog::RecordingDetail) {
+    let rec = &detail.recording;
+    println!("{}  {}", rec.rec_id, rec.name);
+    println!(
+        "  recorded: {} → {}",
+        rec.started_at,
+        rec.ended_at.as_deref().unwrap_or("(open)")
+    );
+    if let Some(cwd) = &rec.cwd {
+        println!("  cwd: {cwd}");
+    }
+    println!("  distilled: {}", if rec.distilled { "yes" } else { "no" });
+    println!("  steps: {}", detail.steps.len());
+    for step in &detail.steps {
+        println!(
+            "    {:>3}. {:<10} {}",
+            step.seq + 1,
+            step.tool_name,
+            step.summary
+        );
+    }
+}
+
+fn print_skills(skills: &[catalog::SkillRow]) {
+    if skills.is_empty() {
+        println!("(no skills distilled yet — use `galdr distill <id>`)");
+        return;
+    }
+    for skill in skills {
+        let provenance = match &skill.rec_id {
+            Some(id) if skill.orphan => format!("← {id} (orphan)"),
+            Some(id) => format!("← {id}"),
+            None => "← (no provenance)".to_string(),
+        };
+        println!("{:<28}  {}", skill.skill_name, provenance);
     }
 }
 

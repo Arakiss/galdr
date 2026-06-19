@@ -3,11 +3,18 @@
 //! ```text
 //! ~/.galdr/
 //! ├── active                 active-recording flag (JSON), absent = not recording
+//! ├── config.json            optional config (distill engine, endpoint, model)
+//! ├── galdrd.sock            daemon control socket (NDJSON over a Unix socket)
+//! ├── galdrd.pid             daemon pidfile
+//! ├── catalog.sqlite         queryable index, rebuilt from spans/ + recordings/
 //! ├── spans/<rec_id>.jsonl   append-only span, one line per tool call
 //! └── recordings/<rec_id>.json   metadata written when a recording is closed
 //! ```
 //!
 //! Distilled skills are written elsewhere, under `~/.agents/skills/<name>/`.
+//!
+//! The SQLite catalog is an **index, never the truth**: it can be deleted and
+//! rebuilt at any time from the spans and recordings with `galdr reindex`.
 
 use std::path::PathBuf;
 
@@ -55,6 +62,21 @@ pub fn ensure_dirs() -> Result<()> {
     std::fs::create_dir_all(spans_dir()?)?;
     std::fs::create_dir_all(recordings_dir()?)?;
     Ok(())
+}
+
+/// Daemon control socket: `~/.galdr/galdrd.sock`.
+pub fn socket_path() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("galdrd.sock"))
+}
+
+/// Daemon pidfile: `~/.galdr/galdrd.pid`.
+pub fn pidfile() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("galdrd.pid"))
+}
+
+/// Queryable catalog database: `~/.galdr/catalog.sqlite`.
+pub fn catalog_db() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("catalog.sqlite"))
 }
 
 /// Skills root: `~/.agents/skills`.

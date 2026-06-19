@@ -33,6 +33,13 @@ pub fn distill(id: &str, from: Option<&Path>) -> Result<()> {
             .with_context(|| format!("could not read the distillation at {}", src.display()))?;
         std::fs::write(&skill_path, content)?;
         println!("Skill installed at {}", skill_path.display());
+
+        // Best-effort: record the skill's provenance in the catalog.
+        crate::ipc::notify_best_effort(&crate::ipc::Request::SkillInstalled {
+            skill_name: skill_name.clone(),
+            rec_id: id.to_string(),
+            skill_path: skill_path.display().to_string(),
+        });
         return Ok(());
     }
 

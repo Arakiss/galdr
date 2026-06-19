@@ -11,7 +11,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 use crate::ext::{PermissionGate, ProvenanceSink};
-use crate::{ext, paths, record, span};
+use crate::{ext, ipc, paths, record, span};
 
 /// Input the harness passes on stdin in PostToolUse. Unknown fields are ignored;
 /// missing ones fall back to their default value.
@@ -70,7 +70,16 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    // The append is the truth, first and unconditional.
     span::append_event(&span_path, &event)?;
+
+    // Best-effort, and only after the truth is durable: hint the daemon to index
+    // this event. The sensor never waits on or depends on the daemon — a dropped
+    // notification is reconciled later from the span on disk.
+    ipc::notify_best_effort(&ipc::Request::EventAppended {
+        rec_id: active.rec_id.clone(),
+        event: event.clone(),
+    });
 
     // Provenance seam: the core records nothing.
     ext::NoopExt.record(&event);

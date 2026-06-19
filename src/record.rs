@@ -113,6 +113,11 @@ pub fn stop() -> Result<()> {
     // Drop the flag: from here on the sensor stops recording.
     let _ = std::fs::remove_file(paths::active_flag()?);
 
+    // Best-effort, after the metadata is on disk: tell the daemon to index it.
+    crate::ipc::notify_best_effort(&crate::ipc::Request::RecordingClosed {
+        recording: recording.clone(),
+    });
+
     println!(
         "■ recording stopped \"{}\"  rec_id={}",
         active.name, active.rec_id
