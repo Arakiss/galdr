@@ -232,3 +232,37 @@ fn render_skill(
 
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{slugify, summarize_input, truncate};
+
+    #[test]
+    fn slugify_normalizes_names() {
+        assert_eq!(slugify("Git Change Summary"), "git-change-summary");
+        assert_eq!(slugify("  weird__name!! "), "weird-name");
+        assert_eq!(slugify("!!!"), "rec");
+    }
+
+    #[test]
+    fn truncate_collapses_and_caps() {
+        assert_eq!(truncate("a b  c", 80), "a b c");
+        assert!(truncate(&"x".repeat(200), 10).ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_reads_tool_specific_fields() {
+        assert_eq!(
+            summarize_input("Bash", &serde_json::json!({ "command": "git status" })),
+            "git status"
+        );
+        assert_eq!(
+            summarize_input("Write", &serde_json::json!({ "file_path": "/tmp/x.md" })),
+            "/tmp/x.md"
+        );
+        assert_eq!(
+            summarize_input("Unknown", &serde_json::json!({ "a": 1, "b": 2 })),
+            "fields: a, b"
+        );
+    }
+}

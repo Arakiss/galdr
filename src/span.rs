@@ -72,3 +72,52 @@ pub fn read_span(span_path: &Path) -> Result<Vec<Event>> {
     }
     Ok(events)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(seq: u64) -> Event {
+        Event {
+            ts: "2026-06-19T00:00:00Z".into(),
+            seq,
+            tool_name: "Bash".into(),
+            tool_input: serde_json::json!({ "command": "echo hi" }),
+            tool_response: serde_json::json!({ "exit_code": 0 }),
+            cwd: Some("/tmp".into()),
+            session_id: Some("s1".into()),
+        }
+    }
+
+    #[test]
+    fn append_then_read_roundtrips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("span.jsonl");
+
+        assert_eq!(count_events(&path), 0, "missing file counts as zero events");
+        append_event(&path, &sample(0)).unwrap();
+        append_event(&path, &sample(1)).unwrap();
+        assert_eq!(count_events(&path), 2);
+
+        let events = read_span(&path).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq, 0);
+        assert_eq!(events[1].seq, 1);
+        assert_eq!(events[0].tool_name, "Bash");
+    }
+
+    #[test]
+    fn read_skips_corrupt_lines() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("span.jsonl");
+
+        append_event(&path, &sample(0)).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{{ not valid json").unwrap();
+
+        // count_events counts raw non-empty lines; read_span skips the corrupt one.
+        assert_eq!(count_events(&path), 2);
+        assert_eq!(read_span(&path).unwrap().len(), 1);
+    }
+}
