@@ -22,6 +22,11 @@ jobs:
   analysis:
     name: scorecard analysis
     runs-on: ubuntu-latest
+    # Scorecard's GraphQL checks need permissions a private repo's GITHUB_TOKEN
+    # does not grant ("Resource not accessible by integration"). It is also a
+    # public-supply-chain signal by design — so only run it once the repo is
+    # public. Until then this skips cleanly instead of failing.
+    if: ${{ github.event.repository.private == false }}
     permissions:
       # Upload the SARIF result to the Security tab.
       security-events: write
