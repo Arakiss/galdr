@@ -8,6 +8,31 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 
 ## [Unreleased]
 
+### Added
+
+- Skill catalog readiness signals: `galdr skills` now reports lifecycle status,
+  readiness score, score delta, provenance, and review notes for installed skills.
+- Skill evaluation history: the catalog now keeps evaluator outputs in
+  `skill_evaluations`, starting with deterministic `readiness_lint` rows and leaving
+  room for future human, LLM, outcome, or learned-model evaluators.
+- Supervised outcome capture: `galdr outcome usage`, `galdr outcome label`, and
+  `galdr outcome list` write append-only skill usage/outcome JSONL and index it for
+  later offline classifier or ranker training.
+- Operational commands: `galdr rec status`, `galdr daemon status`, `galdr daemon stop`,
+  `galdr evaluations`, `galdr doctor`, and `galdr setup claude --check/--print`.
+- Safe recording export: `galdr export <rec_id> --out <dir>` writes metadata,
+  summaries, skill provenance, usage labels, and outcomes without raw payloads by
+  default; `--include-raw` and `--redact` are explicit raw-export paths.
+- Optional capture policy in `~/.galdr/config.json` for future recordings
+  (`deny_tools`, `deny_cwd_prefixes`, `max_response_chars`).
+
+### Changed
+
+- Final `galdr distill <rec_id> --from <file>` installs now validate the refined skill
+  has frontmatter, required sections, and no draft markers.
+- The no-daemon catalog fallback now stays current after recording closes, draft writes,
+  final skill installs, and parametrized skill emits.
+
 ## [0.2.0] - 2026-06-19
 
 Phase 1 — the queryable, browsable substrate on top of the Phase 0 loop.

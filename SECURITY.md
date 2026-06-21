@@ -21,6 +21,12 @@ Design guarantees:
   human is expected to review the skill before use. Prefer reviewing any
   machine-generated skill before relying on it.
 - The sensor (`galdr hook`) never propagates an error to the agent session.
+- Exports omit raw tool payloads by default. `galdr export --include-raw` writes the
+  original payloads and should be treated as sensitive; `galdr export --redact` writes
+  a best-effort redacted copy without modifying the original span.
+- Optional capture policy in `~/.galdr/config.json` can deny future events by tool name
+  or CWD prefix, and can cap future recorded responses. It does not rewrite existing
+  spans.
 
 galdr does not redact secrets from a span. If a recorded session touched a credential,
 treat the span as sensitive: it is a plain-text record on disk.
@@ -41,3 +47,7 @@ a non-loopback host), or write outside the documented `~/.galdr` and skills dire
 
 Out of scope (for now): a hostile local user with the same OS account (they already have
 filesystem access), and the sensitivity of data the operator chooses to record.
+
+`galdr outcome` writes operator notes, usage outcomes, and review labels under
+`~/.galdr/outcomes/`. Treat those files like spans: local-first and append-only, but
+potentially sensitive if the notes include project names, incidents, or private context.

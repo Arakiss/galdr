@@ -6,7 +6,7 @@
   <a href="https://github.com/Arakiss/galdr/actions/workflows/ci.yml"><img src="https://github.com/Arakiss/galdr/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0">
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88+">
-  <img src="https://img.shields.io/badge/status-phase%201%20·%20daemon%20%2B%20TUI%20%2B%20diff-8B7BF0.svg" alt="Status: phase 1">
+  <img src="https://img.shields.io/badge/status-phase%201%20·%20catalog%20%2B%20evals%20%2B%20ops-8B7BF0.svg" alt="Status: phase 1">
   <img src="https://img.shields.io/badge/egress-none%20·%20loopback--only-4FD6C9.svg" alt="No external egress, loopback-only">
 </p>
 
@@ -25,10 +25,11 @@ The idea: instead of re-explaining to your agent how to do a task it already did
 > [!NOTE]
 > **Status: Phase 1.** Built on the proven Phase 0 loop (record → distill → replay),
 > this adds the supervisor daemon, a SQLite catalog (a rebuildable *index*, never the
-> truth), a terminal UI, diff-based parametrization of two recordings, and optional
+> truth), readiness/evaluator signals for distilled skills, operational diagnostics,
+> safe export, a terminal UI, diff-based parametrization of two recordings, and optional
 > autonomous distillation against a local, loopback-only MLX server. A plain
-> `cargo build` needs none of that — autonomous distillation is feature-gated and falls
-> back cleanly to the agent-assisted draft.
+> `cargo build` needs none of the MLX path — autonomous distillation is feature-gated
+> and falls back cleanly to the agent-assisted draft.
 
 ## Why tool calls, not pixels
 
@@ -68,6 +69,7 @@ galdr rec start demo      # start recording
 galdr rec stop            # close the recording, prints the rec_id
 
 galdr list                # list recordings
+galdr rec status          # inspect the active recording, if any
 galdr distill <rec_id>    # generate the skill draft
 #  ... the agent reads the span and writes the refined skill to a temp file ...
 galdr distill <rec_id> --from <temp-file>   # install the final skill
@@ -77,20 +79,63 @@ galdr distill <rec_id> --from <temp-file>   # install the final skill
 
 ```sh
 galdr daemon --detach        # run the supervisor daemon (catalog indexer + socket)
+galdr daemon status          # check whether the daemon is answering
+galdr daemon stop            # ask the daemon to shut down gracefully
 galdr show <rec_id>          # inspect one recording with its steps
-galdr skills                 # list installed skills and their provenance
+galdr skills                 # list installed skills, provenance, status, and readiness metrics
+galdr evaluations            # list skill evaluator outputs from the catalog
+galdr evaluations --skill <name>   # show one skill's evaluator history
+galdr outcome usage --skill <name> --rec <rec_id> --outcome success
+galdr outcome label --skill <name> --label accepted --evaluator human
+galdr outcome list --skill <name>  # inspect captured usage/outcome labels
 galdr reindex                # rebuild the SQLite catalog from disk
+galdr doctor                 # diagnose config, catalog, daemon, skills, and hook wiring
+galdr setup claude --check   # check Claude Code PostToolUse hook wiring
+galdr setup claude --print   # print the safe settings.json snippet
 galdr tui                    # browse recordings, inspect spans, audit skills
 
 galdr diff <a> <b>           # diff two recordings: constants vs parameters
 galdr parametrize <a> <b> --emit   # write a parametrized SKILL.md (suffix -param)
+galdr export <rec_id> --out ./export        # export metadata + summaries, no raw payloads
+galdr export <rec_id> --out ./export --redact   # export a redacted raw copy
 
 galdr distill <rec_id> --auto      # autonomous distillation (local MLX, see below)
 ```
 
 The daemon is optional. `list`/`show`/`skills` answer daemon-first, then from the
 read-only catalog, then from a fresh in-memory index built straight from disk — so the
-CLI works whether or not the daemon is running.
+CLI works whether or not the daemon is running. Write paths also keep the local catalog
+fresh best-effort, so a closed recording or newly installed skill is visible without
+waiting for a daemon process.
+
+`galdr doctor` checks the local root, config, daemon socket, active recording, rebuildable
+catalog, skill provenance, draft skills, and Claude Code hook wiring. `galdr setup claude
+--print` emits the safe hook snippet; it never mutates your settings file.
+
+`galdr skills` is a small skill catalog, not just a name list. It reports each
+skill's provenance, lifecycle status (`draft`, `final`, `param-draft`, `unknown`), a
+simple 0-100 readiness score, and the latest delta versus the previously indexed
+version. The score is intentionally explainable: frontmatter, required sections, draft
+markers, and provenance. It is a lint/readiness guardrail, not a claim that the skill is
+objectively good.
+
+Evaluator outputs are stored separately from the skill row and can be inspected with
+`galdr evaluations`. Today's built-in evaluator is `readiness_lint`; future evaluators
+can add human review, LLM review, outcome evidence, or a learned model without mixing
+those signals into one opaque "quality" number.
+
+`galdr outcome` is the supervised-data lane. It records append-only local JSONL events
+under `~/.galdr/outcomes/` and indexes them into the catalog:
+
+- `galdr outcome usage` records that a skill was used in a later recording, with task
+  kind, outcome, retry count, manual intervention count, and notes.
+- `galdr outcome label` records explicit labels or reviews such as `accepted`,
+  `rejected`, `needs_review`, `regression`, or any project-specific label.
+- `galdr outcome list` shows the captured usage and labels.
+
+This keeps learned-model training out of the agent loop while collecting the labels a
+future offline classifier or ranker needs: skill content/hash, provenance, task context,
+observed outcome, retries, interventions, and reviewer labels.
 
 ### Optional: autonomous distillation (local MLX)
 
@@ -142,14 +187,32 @@ recording is active.
 ├── config.json                 optional config (distill engine, endpoint, model)
 ├── galdrd.sock                 daemon control socket (NDJSON over a Unix socket)
 ├── galdrd.pid                  daemon pidfile
-├── catalog.sqlite              queryable index, rebuilt from spans/ + recordings/
+├── catalog.sqlite              queryable index, rebuilt from spans/ + recordings/ + skills
 ├── spans/<rec_id>.jsonl        append-only span, one JSON line per tool call
+├── outcomes/skill_usage.jsonl  append-only skill usage observations
+├── outcomes/skill_outcomes.jsonl append-only skill labels and reviews
 └── recordings/<rec_id>.json    metadata for each closed recording
 ```
 
 The span is the raw source of truth: append-only, immutable, inspectable. The SQLite
 catalog is an **index, never the truth** — it stores one-line step summaries (no raw
-blobs), and `galdr reindex` rebuilds it from the spans and recordings at any time.
+blobs), readiness/evaluation rows, and outcome indexes. `galdr reindex` rebuilds it from
+spans, recordings, skills, and outcome logs at any time.
+
+`config.json` may also include optional capture policy for future recordings:
+
+```json
+{
+  "capture": {
+    "deny_tools": ["SecretTool"],
+    "deny_cwd_prefixes": ["/private/project"],
+    "max_response_chars": 4000
+  }
+}
+```
+
+The policy only applies to new events as the hook records them. It never edits spans
+that already exist.
 
 ## Extension points
 
@@ -188,6 +251,12 @@ Phase 1 (shipped, built on the Phase 0 loop):
 - ✅ **TUI** to browse recordings, inspect spans, and audit skill provenance.
 - ✅ **Diff-based parametrization** of two recordings (constant = steps, variable = inputs).
 - ✅ **Autonomous distillation** against a local, loopback-only MLX server.
+- ✅ **Skill catalog readiness signals** with lifecycle status, provenance, score, delta,
+  and an evaluator table for future human/LLM/model reviews.
+- ✅ **Operational diagnostics** (`doctor`, `rec status`, daemon status/stop, Claude setup
+  check/print).
+- ✅ **Safe export path** that omits raw payloads by default and can emit redacted raw
+  copies without touching the original span.
 
 Next:
 
