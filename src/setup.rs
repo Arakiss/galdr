@@ -59,7 +59,7 @@ fn has_galdr_hook(value: &serde_json::Value) -> bool {
             if map
                 .get("command")
                 .and_then(|v| v.as_str())
-                .is_some_and(|command| command.trim() == "galdr hook")
+                .is_some_and(is_galdr_hook_command)
             {
                 return true;
             }
@@ -67,5 +67,24 @@ fn has_galdr_hook(value: &serde_json::Value) -> bool {
         }
         serde_json::Value::Array(values) => values.iter().any(has_galdr_hook),
         _ => false,
+    }
+}
+
+fn is_galdr_hook_command(command: &str) -> bool {
+    let command = command.trim();
+    command == "galdr hook" || command.ends_with("/galdr hook")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_path_qualified_galdr_hook_commands() {
+        assert!(is_galdr_hook_command("galdr hook"));
+        assert!(is_galdr_hook_command(
+            "/Users/dolores/.cargo/bin/galdr hook"
+        ));
+        assert!(!is_galdr_hook_command("galdr outcome list"));
     }
 }
