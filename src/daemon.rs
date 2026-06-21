@@ -191,6 +191,7 @@ fn handle_request(db: &Db, req: Request) -> Response {
             skill_name,
             rec_id,
             skill_path,
+            status,
         } => with_db(db, |c| {
             catalog::upsert_skill(
                 c,
@@ -198,6 +199,7 @@ fn handle_request(db: &Db, req: Request) -> Response {
                 Some(&rec_id),
                 &skill_path,
                 Some(&record::now_rfc3339()),
+                &status,
             )
             .map(|()| Response::Ack)
         }),

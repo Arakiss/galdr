@@ -13,7 +13,7 @@ use crate::diff::{self, Confidence, DiffReport, Parameter};
 use crate::ipc::Request;
 use crate::span::Event;
 use crate::summary::{slugify, summarize_input};
-use crate::{ipc, paths};
+use crate::{catalog, ipc, paths, record};
 
 /// Diffs two recordings and, with `emit`, installs the parametrized skill;
 /// otherwise prints the report.
@@ -35,11 +35,22 @@ pub fn parametrize(id_a: &str, id_b: &str, emit: bool) -> Result<()> {
     std::fs::write(&path, content)?;
     println!("Parametrized skill written to {}", path.display());
 
+    let skill_path = path.display().to_string();
+    let installed_at = record::now_rfc3339();
+    let _ = catalog::sync_installed_skill(
+        &skill_name,
+        Some(id_a),
+        &skill_path,
+        Some(&installed_at),
+        catalog::STATUS_PARAM_DRAFT,
+    );
+
     // Best-effort provenance; the "A" recording is the primary procedure.
     ipc::notify_best_effort(&Request::SkillInstalled {
         skill_name,
         rec_id: id_a.to_string(),
-        skill_path: path.display().to_string(),
+        skill_path,
+        status: catalog::STATUS_PARAM_DRAFT.to_string(),
     });
     Ok(())
 }

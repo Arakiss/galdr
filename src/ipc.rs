@@ -44,6 +44,8 @@ pub enum Request {
         skill_name: String,
         rec_id: String,
         skill_path: String,
+        #[serde(default = "default_skill_status")]
+        status: String,
     },
     /// List closed recordings.
     ListRecordings,
@@ -55,6 +57,10 @@ pub enum Request {
     Reindex,
     /// Ask the daemon to shut down gracefully.
     Shutdown,
+}
+
+fn default_skill_status() -> String {
+    crate::catalog::STATUS_UNKNOWN.to_string()
 }
 
 /// A message from the daemon back to a client.
@@ -128,6 +134,7 @@ mod tests {
             skill_name: "galdr-demo".into(),
             rec_id: "01ABC".into(),
             skill_path: "/x/SKILL.md".into(),
+            status: crate::catalog::STATUS_FINAL.into(),
         };
         let line = serde_json::to_string(&req).unwrap();
         assert!(line.contains("\"type\":\"SkillInstalled\""));

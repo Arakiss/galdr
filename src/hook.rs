@@ -11,7 +11,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 use crate::ext::{PermissionGate, ProvenanceSink};
-use crate::{ext, ipc, paths, record, span};
+use crate::{config, ext, ipc, paths, record, span};
 
 /// Input the harness passes on stdin in PostToolUse. Unknown fields are ignored;
 /// missing ones fall back to their default value.
@@ -54,7 +54,7 @@ pub fn run() -> Result<()> {
     let input: HookInput = serde_json::from_str(&buf)?;
 
     let span_path = paths::span_file(&active.rec_id)?;
-    let event = span::Event {
+    let mut event = span::Event {
         ts: record::now_rfc3339(),
         seq: span::count_events(&span_path),
         tool_name: input.tool_name,
@@ -63,6 +63,12 @@ pub fn run() -> Result<()> {
         cwd: input.cwd,
         session_id: input.session_id,
     };
+
+    let capture = config::Config::load_capture();
+    if denied_by_capture_policy(&event, &capture) {
+        return Ok(());
+    }
+    apply_response_cap(&mut event, capture.max_response_chars);
 
     // Permission seam: the core allows everything; an external layer may veto.
     let gate = ext::NoopExt;
@@ -95,4 +101,39 @@ pub fn run() -> Result<()> {
         let _ = record::write_active(&updated);
     }
     Ok(())
+}
+
+fn denied_by_capture_policy(event: &span::Event, capture: &config::CaptureConfig) -> bool {
+    if capture
+        .deny_tools
+        .iter()
+        .any(|tool| tool == &event.tool_name)
+    {
+        return true;
+    }
+    if let Some(cwd) = &event.cwd
+        && capture
+            .deny_cwd_prefixes
+            .iter()
+            .any(|prefix| cwd.starts_with(prefix))
+    {
+        return true;
+    }
+    false
+}
+
+fn apply_response_cap(event: &mut span::Event, max_chars: Option<usize>) {
+    let Some(max_chars) = max_chars else {
+        return;
+    };
+    let raw = event.tool_response.to_string();
+    if raw.chars().count() <= max_chars {
+        return;
+    }
+    let preview: String = raw.chars().take(max_chars).collect();
+    event.tool_response = serde_json::json!({
+        "galdr_truncated": true,
+        "original_chars": raw.chars().count(),
+        "preview": preview,
+    });
 }

@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use ulid::Ulid;
 
-use crate::{paths, span};
+use crate::{catalog, paths, span};
 
 /// State of the active recording, serialized in `~/.galdr/active`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +112,10 @@ pub fn stop() -> Result<()> {
 
     // Drop the flag: from here on the sensor stops recording.
     let _ = std::fs::remove_file(paths::active_flag()?);
+
+    // Keep the local catalog current even when the daemon is not running. This
+    // is best-effort because the span + recording metadata are the truth.
+    let _ = catalog::sync_closed_recording(&recording, &events);
 
     // Best-effort, after the metadata is on disk: tell the daemon to index it.
     crate::ipc::notify_best_effort(&crate::ipc::Request::RecordingClosed {

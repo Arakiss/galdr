@@ -9,13 +9,17 @@ mod config;
 mod daemon;
 mod diff;
 mod distill;
+mod doctor;
 mod engine;
+mod export;
 mod ext;
 mod hook;
 mod ipc;
+mod outcome;
 mod parametrize;
 mod paths;
 mod record;
+mod setup;
 mod span;
 mod summary;
 mod tui;
@@ -78,8 +82,45 @@ enum Commands {
     /// List installed skills and their provenance.
     Skills,
 
+    /// List skill evaluator outputs from the catalog.
+    Evaluations {
+        /// Limit output to one skill name.
+        #[arg(long)]
+        skill: Option<String>,
+    },
+
+    /// Record or inspect skill usage outcomes for later offline evaluation.
+    Outcome {
+        #[command(subcommand)]
+        action: OutcomeAction,
+    },
+
     /// Open the terminal UI to browse recordings, inspect spans, and audit skills.
     Tui,
+
+    /// Export a recording without raw payloads unless explicitly requested.
+    Export {
+        /// rec_id of the recording.
+        id: String,
+        /// Output directory.
+        #[arg(long, value_name = "DIR")]
+        out: PathBuf,
+        /// Include the raw span JSONL. Sensitive.
+        #[arg(long)]
+        include_raw: bool,
+        /// Export a redacted raw copy instead of the original raw payloads.
+        #[arg(long)]
+        redact: bool,
+    },
+
+    /// Diagnose local galdr installation, catalog, config, and hook wiring.
+    Doctor,
+
+    /// Print or check harness setup snippets.
+    Setup {
+        #[command(subcommand)]
+        target: SetupTarget,
+    },
 
     /// Diff two recordings of the same task to find constants and parameters.
     Diff {
@@ -105,6 +146,8 @@ enum Commands {
 
     /// Run the supervisor daemon (catalog indexer + control socket).
     Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonAction>,
         /// Start in the background (detached) instead of in the foreground.
         #[arg(long)]
         detach: bool,
@@ -120,6 +163,84 @@ enum RecAction {
     },
     /// Stop the active recording.
     Stop,
+    /// Show active recording status.
+    Status,
+}
+
+#[derive(Subcommand)]
+enum DaemonAction {
+    /// Show whether the daemon socket is answering.
+    Status,
+    /// Ask the daemon to shut down gracefully.
+    Stop,
+}
+
+#[derive(Subcommand)]
+enum SetupTarget {
+    /// Inspect or print the Claude Code PostToolUse hook snippet.
+    Claude {
+        /// Check whether ~/.claude/settings.json already has galdr hook wiring.
+        #[arg(long)]
+        check: bool,
+        /// Print the recommended settings snippet.
+        #[arg(long)]
+        print: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum OutcomeAction {
+    /// Record that a skill was used in a real recording.
+    Usage {
+        /// Skill name under ~/.agents/skills.
+        #[arg(long)]
+        skill: String,
+        /// Recording where the skill was used.
+        #[arg(long = "rec")]
+        rec_id: String,
+        /// Optional task family for later grouping.
+        #[arg(long)]
+        task_kind: Option<String>,
+        /// Observed result: success, partial, failed, abandoned, unknown, etc.
+        #[arg(long, default_value = outcome::OUTCOME_UNKNOWN)]
+        outcome: String,
+        /// Number of retries needed after using the skill.
+        #[arg(long, default_value_t = 0)]
+        retries: u32,
+        /// Number of manual corrections/interventions needed.
+        #[arg(long, default_value_t = 0)]
+        manual_interventions: u32,
+        /// Optional operator note.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Record an explicit label or review for a skill.
+    Label {
+        /// Skill name under ~/.agents/skills.
+        #[arg(long)]
+        skill: String,
+        /// Optional recording used as evidence.
+        #[arg(long = "rec")]
+        rec_id: Option<String>,
+        /// Evaluator source: human, llm_review, test, session_outcome, etc.
+        #[arg(long, default_value = "human")]
+        evaluator: String,
+        /// Label: accepted, rejected, regression, useful, needs_review, etc.
+        #[arg(long)]
+        label: String,
+        /// Evaluator confidence, from 0 to 1.
+        #[arg(long, default_value_t = 1.0)]
+        confidence: f64,
+        /// Optional operator note.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// List captured usage and outcome labels.
+    List {
+        /// Limit output to one skill name.
+        #[arg(long)]
+        skill: Option<String>,
+    },
 }
 
 fn main() {
@@ -139,6 +260,7 @@ fn main() {
             let result = match action {
                 RecAction::Start { name } => record::start(name),
                 RecAction::Stop => record::stop(),
+                RecAction::Status => cmd_rec_status(),
             };
             exit_on_error(result);
         }
@@ -157,14 +279,87 @@ fn main() {
         Commands::List => exit_on_error(cmd_list()),
         Commands::Show { id } => exit_on_error(cmd_show(&id)),
         Commands::Skills => exit_on_error(cmd_skills()),
+        Commands::Evaluations { skill } => exit_on_error(cmd_evaluations(skill.as_deref())),
+        Commands::Outcome { action } => exit_on_error(cmd_outcome(action)),
         Commands::Tui => exit_on_error(tui::run()),
+        Commands::Export {
+            id,
+            out,
+            include_raw,
+            redact,
+        } => exit_on_error(export::export_recording(&id, &out, include_raw, redact)),
+        Commands::Doctor => exit_on_error(doctor::run()),
+        Commands::Setup { target } => match target {
+            SetupTarget::Claude { check, print } => {
+                if print {
+                    setup::claude_print();
+                }
+                if check || !print {
+                    exit_on_error(setup::claude_check());
+                }
+            }
+        },
         Commands::Diff { a, b } => exit_on_error(cmd_diff(&a, &b)),
         Commands::Parametrize { a, b, emit } => {
             exit_on_error(parametrize::parametrize(&a, &b, emit))
         }
         Commands::Reindex => exit_on_error(cmd_reindex()),
-        Commands::Daemon { detach } => exit_on_error(daemon::run(detach)),
+        Commands::Daemon { action, detach } => match action {
+            Some(DaemonAction::Status) => exit_on_error(cmd_daemon_status()),
+            Some(DaemonAction::Stop) => exit_on_error(cmd_daemon_stop()),
+            None => exit_on_error(daemon::run(detach)),
+        },
     }
+}
+
+fn cmd_rec_status() -> anyhow::Result<()> {
+    let Some(active) = record::read_active() else {
+        println!("no active recording");
+        return Ok(());
+    };
+    let span_path = paths::span_file(&active.rec_id)?;
+    let steps = span::count_events(&span_path);
+    println!("active recording: {}", active.name);
+    println!("  rec_id: {}", active.rec_id);
+    println!("  started_at: {}", active.started_at);
+    println!("  steps: {steps}");
+    println!("  span: {}", span_path.display());
+    if let Some(transcript_path) = active.transcript_path {
+        println!("  transcript: {transcript_path}");
+    }
+    Ok(())
+}
+
+fn cmd_daemon_status() -> anyhow::Result<()> {
+    match ipc::query(&ipc::Request::Ping) {
+        Ok(ipc::Response::Pong) => {
+            println!("daemon running");
+            if let Ok(pid) = std::fs::read_to_string(paths::pidfile()?) {
+                println!("  pid: {}", pid.trim());
+            }
+        }
+        _ => {
+            let pidfile = paths::pidfile()?;
+            if pidfile.exists() {
+                println!(
+                    "daemon not responding (stale pidfile: {})",
+                    pidfile.display()
+                );
+            } else {
+                println!("daemon stopped");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_daemon_stop() -> anyhow::Result<()> {
+    match ipc::query(&ipc::Request::Shutdown) {
+        Ok(ipc::Response::Ack) => println!("daemon stopped"),
+        Ok(other) => println!("daemon returned unexpected response: {other:?}"),
+        Err(_) => println!("daemon is not running"),
+    }
+    Ok(())
 }
 
 /// Resolves catalog reads through three tiers, newest data first: the live daemon,
@@ -212,6 +407,75 @@ fn cmd_skills() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cmd_evaluations(skill: Option<&str>) -> anyhow::Result<()> {
+    let evaluations =
+        from_db(|conn| catalog::list_skill_evaluations(conn, skill)).unwrap_or_default();
+    print_evaluations(&evaluations);
+    Ok(())
+}
+
+fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
+    match action {
+        OutcomeAction::Usage {
+            skill,
+            rec_id,
+            task_kind,
+            outcome,
+            retries,
+            manual_interventions,
+            notes,
+        } => {
+            let event = outcome::record_usage(outcome::UsageInput {
+                skill_name: skill,
+                rec_id,
+                task_kind,
+                outcome,
+                retries,
+                manual_intervention_count: manual_interventions,
+                notes,
+            })?;
+            println!(
+                "usage recorded: {} {} outcome={} rec_id={}",
+                event.event_id, event.skill_name, event.outcome, event.rec_id
+            );
+        }
+        OutcomeAction::Label {
+            skill,
+            rec_id,
+            evaluator,
+            label,
+            confidence,
+            notes,
+        } => {
+            let event = outcome::record_outcome(outcome::OutcomeInput {
+                skill_name: skill,
+                rec_id,
+                evaluator_kind: evaluator,
+                label,
+                confidence,
+                notes,
+            })?;
+            println!(
+                "outcome recorded: {} {} {}:{} confidence={:.2}",
+                event.event_id,
+                event.skill_name,
+                event.evaluator_kind,
+                event.label,
+                event.confidence
+            );
+        }
+        OutcomeAction::List { skill } => {
+            let usages = from_db(|conn| catalog::list_skill_usage(conn, skill.as_deref()))
+                .unwrap_or_default();
+            let outcomes = from_db(|conn| catalog::list_skill_outcomes(conn, skill.as_deref()))
+                .unwrap_or_default();
+            print_usage(&usages);
+            print_outcomes(&outcomes);
+        }
+    }
+    Ok(())
+}
+
 fn cmd_diff(a: &str, b: &str) -> anyhow::Result<()> {
     let report = diff::compute(a, b)?;
     print!("{}", diff::render_report(&report));
@@ -226,8 +490,8 @@ fn cmd_reindex() -> anyhow::Result<()> {
         catalog::reindex(&mut conn)?
     };
     println!(
-        "catalog rebuilt: {} recordings, {} steps, {} skills",
-        stats.recordings, stats.steps, stats.skills
+        "catalog rebuilt: {} recordings, {} steps, {} skills, {} usages, {} outcomes",
+        stats.recordings, stats.steps, stats.skills, stats.usages, stats.outcomes
     );
     Ok(())
 }
@@ -290,12 +554,81 @@ fn print_skills(skills: &[catalog::SkillRow]) {
         return;
     }
     for skill in skills {
+        let delta = match skill.readiness_delta.cmp(&0) {
+            std::cmp::Ordering::Greater => format!("+{}", skill.readiness_delta),
+            std::cmp::Ordering::Less => skill.readiness_delta.to_string(),
+            std::cmp::Ordering::Equal => "0".to_string(),
+        };
         let provenance = match &skill.rec_id {
             Some(id) if skill.orphan => format!("← {id} (orphan)"),
             Some(id) => format!("← {id}"),
             None => "← (no provenance)".to_string(),
         };
-        println!("{:<28}  {}", skill.skill_name, provenance);
+        println!(
+            "{:<28}  {:<11}  readiness {:>3} ({:>3})  {:<36}  {}",
+            skill.skill_name,
+            skill.status,
+            skill.readiness_score,
+            delta,
+            provenance,
+            skill.readiness_notes
+        );
+    }
+}
+
+fn print_evaluations(evaluations: &[catalog::SkillEvaluationRow]) {
+    if evaluations.is_empty() {
+        println!("(no skill evaluations yet)");
+        return;
+    }
+    for evaluation in evaluations {
+        let delta = match evaluation.score_delta.cmp(&0) {
+            std::cmp::Ordering::Greater => format!("+{}", evaluation.score_delta),
+            std::cmp::Ordering::Less => evaluation.score_delta.to_string(),
+            std::cmp::Ordering::Equal => "0".to_string(),
+        };
+        println!(
+            "{:<28}  {:<16}  score {:>3} ({:>3})  confidence {:.2}  {}",
+            evaluation.skill_name,
+            evaluation.evaluator_kind,
+            evaluation.score,
+            delta,
+            evaluation.confidence,
+            evaluation.created_at
+        );
+    }
+}
+
+fn print_usage(usages: &[catalog::SkillUsageRow]) {
+    if usages.is_empty() {
+        println!("(no skill usage events yet)");
+        return;
+    }
+    println!("usage:");
+    for usage in usages {
+        println!(
+            "  {:<28}  outcome {:<10} retries {:>2} interventions {:>2}  rec {}",
+            usage.skill_name,
+            usage.outcome,
+            usage.retries,
+            usage.manual_intervention_count,
+            usage.rec_id
+        );
+    }
+}
+
+fn print_outcomes(outcomes: &[catalog::SkillOutcomeRow]) {
+    if outcomes.is_empty() {
+        println!("(no skill outcome labels yet)");
+        return;
+    }
+    println!("labels:");
+    for outcome in outcomes {
+        let rec = outcome.rec_id.as_deref().unwrap_or("(no rec)");
+        println!(
+            "  {:<28}  {:<14} {:<14} confidence {:.2}  {}",
+            outcome.skill_name, outcome.evaluator_kind, outcome.label, outcome.confidence, rec
+        );
     }
 }
 

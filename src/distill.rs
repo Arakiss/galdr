@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::engine::{self, EngineKind};
 use crate::span::Event;
 use crate::summary::{slugify, summarize_input};
-use crate::{paths, record, span};
+use crate::{catalog, paths, record, span};
 
 /// Distills recording `id`.
 ///
@@ -37,6 +37,7 @@ pub fn distill(id: &str, from: Option<&Path>) -> Result<()> {
     if let Some(src) = from {
         let content = std::fs::read_to_string(src)
             .with_context(|| format!("could not read the distillation at {}", src.display()))?;
+        validate_skill_md(&content)?;
         install_skill(&skill_name, &skill_dir, &content, id)?;
         return Ok(());
     }
@@ -59,6 +60,8 @@ fn write_draft(
 
     let content = render_skill(skill_name, recording, &events, &span_path);
     std::fs::write(&skill_path, content)?;
+
+    note_skill_written(skill_name, &skill_path, id, catalog::STATUS_DRAFT);
 
     println!("Skill draft written to {}", skill_path.display());
     println!("Normalized steps: {}", events.len());
@@ -123,12 +126,27 @@ fn install_skill(skill_name: &str, skill_dir: &Path, content: &str, rec_id: &str
     std::fs::write(&skill_path, content)?;
     println!("Skill installed at {}", skill_path.display());
 
+    note_skill_written(skill_name, &skill_path, rec_id, catalog::STATUS_FINAL);
+    Ok(())
+}
+
+fn note_skill_written(skill_name: &str, skill_path: &Path, rec_id: &str, status: &str) {
+    let skill_path_string = skill_path.display().to_string();
+    let installed_at = record::now_rfc3339();
+    let _ = catalog::sync_installed_skill(
+        skill_name,
+        Some(rec_id),
+        &skill_path_string,
+        Some(&installed_at),
+        status,
+    );
+
     crate::ipc::notify_best_effort(&crate::ipc::Request::SkillInstalled {
         skill_name: skill_name.to_string(),
         rec_id: rec_id.to_string(),
-        skill_path: skill_path.display().to_string(),
+        skill_path: skill_path_string,
+        status: status.to_string(),
     });
-    Ok(())
 }
 
 /// Builds the (system, user) prompt for autonomous distillation. The raw payloads
@@ -204,8 +222,10 @@ pub fn validate_skill_md(skill_md: &str) -> Result<()> {
     if !skill_md.contains("description:") {
         bail!("frontmatter missing `description`");
     }
-    if !skill_md.contains("## ") {
-        bail!("no `##` sections");
+    for section in ["## Goal", "## Procedure", "## Success criteria"] {
+        if !skill_md.contains(section) {
+            bail!("missing `{section}` section");
+        }
     }
     if skill_md.contains("TODO(agent)") || skill_md.contains("[galdr DRAFT]") {
         bail!("contains unfinished draft markers");

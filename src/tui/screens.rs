@@ -189,27 +189,45 @@ fn render_audit<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
         return;
     }
 
-    let header = Row::new(["skill", "← recording", "status"]).style(theme::dim());
+    let header = Row::new(["skill", "status", "readiness", "← recording"]).style(theme::dim());
     let rows: Vec<Row> = app
         .skills
         .iter()
         .map(|s| {
-            let status = if s.orphan {
-                Span::styled("orphan", theme::warn())
+            let provenance = format!(
+                "{} {}",
+                if s.orphan { "orphan" } else { "linked" },
+                s.rec_id.clone().unwrap_or_else(|| "(none)".into())
+            );
+            let provenance = if s.orphan {
+                Span::styled(provenance, theme::warn())
             } else {
-                Span::styled("linked", theme::ok())
+                Span::styled(provenance, theme::ok())
+            };
+            let score = if s.readiness_score >= 80 {
+                Span::styled(
+                    format!("{} ({:+})", s.readiness_score, s.readiness_delta),
+                    theme::ok(),
+                )
+            } else {
+                Span::styled(
+                    format!("{} ({:+})", s.readiness_score, s.readiness_delta),
+                    theme::warn(),
+                )
             };
             Row::new(vec![
                 Cell::from(s.skill_name.clone()),
-                Cell::from(s.rec_id.clone().unwrap_or_else(|| "(none)".into())),
-                Cell::from(status),
+                Cell::from(s.status.clone()),
+                Cell::from(score),
+                Cell::from(provenance),
             ])
         })
         .collect();
     let widths = [
         Constraint::Min(20),
-        Constraint::Length(28),
-        Constraint::Length(8),
+        Constraint::Length(12),
+        Constraint::Length(12),
+        Constraint::Length(36),
     ];
     let table = Table::new(rows, widths)
         .header(header)
@@ -406,6 +424,10 @@ mod tests {
                 rec_id: Some("01ZZZ".into()),
                 skill_path: "/x/SKILL.md".into(),
                 installed_at: None,
+                status: crate::catalog::STATUS_DRAFT.into(),
+                readiness_score: 65,
+                readiness_delta: -10,
+                readiness_notes: "draft markers present".into(),
                 orphan: true,
             }],
             detail: Some(detail),

@@ -8,6 +8,7 @@
 //! ├── galdrd.pid             daemon pidfile
 //! ├── catalog.sqlite         queryable index, rebuilt from spans/ + recordings/
 //! ├── spans/<rec_id>.jsonl   append-only span, one line per tool call
+//! ├── outcomes/*.jsonl       append-only skill usage and outcome labels
 //! └── recordings/<rec_id>.json   metadata written when a recording is closed
 //! ```
 //!
@@ -52,6 +53,21 @@ pub fn recordings_dir() -> Result<PathBuf> {
     Ok(galdr_root()?.join("recordings"))
 }
 
+/// Skill usage and outcome-label directory: `~/.galdr/outcomes`.
+pub fn outcomes_dir() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("outcomes"))
+}
+
+/// Append-only skill usage log: `~/.galdr/outcomes/skill_usage.jsonl`.
+pub fn skill_usage_log() -> Result<PathBuf> {
+    Ok(outcomes_dir()?.join("skill_usage.jsonl"))
+}
+
+/// Append-only skill outcome-label log: `~/.galdr/outcomes/skill_outcomes.jsonl`.
+pub fn skill_outcomes_log() -> Result<PathBuf> {
+    Ok(outcomes_dir()?.join("skill_outcomes.jsonl"))
+}
+
 /// A recording's metadata: `~/.galdr/recordings/<rec_id>.json`.
 pub fn recording_file(rec_id: &str) -> Result<PathBuf> {
     Ok(recordings_dir()?.join(format!("{rec_id}.json")))
@@ -61,6 +77,7 @@ pub fn recording_file(rec_id: &str) -> Result<PathBuf> {
 pub fn ensure_dirs() -> Result<()> {
     std::fs::create_dir_all(spans_dir()?)?;
     std::fs::create_dir_all(recordings_dir()?)?;
+    std::fs::create_dir_all(outcomes_dir()?)?;
     Ok(())
 }
 
@@ -82,6 +99,11 @@ pub fn catalog_db() -> Result<PathBuf> {
 /// Optional config file: `~/.galdr/config.json`.
 pub fn config_file() -> Result<PathBuf> {
     Ok(galdr_root()?.join("config.json"))
+}
+
+/// Claude Code settings file inspected by `galdr setup claude`.
+pub fn claude_settings() -> Result<PathBuf> {
+    Ok(home()?.join(".claude").join("settings.json"))
 }
 
 /// Skills root: `~/.agents/skills`.

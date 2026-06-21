@@ -33,6 +33,19 @@ pub struct Config {
     pub timeout_secs: u64,
     /// Per-step budget (chars) for raw payloads embedded in the prompt.
     pub raw_field_char_budget: usize,
+    /// Optional recording policy for the hook hot path.
+    pub capture: CaptureConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CaptureConfig {
+    /// Tool names that must not be recorded.
+    pub deny_tools: Vec<String>,
+    /// CWD prefixes that must not be recorded.
+    pub deny_cwd_prefixes: Vec<String>,
+    /// Optional JSON-character cap for recorded tool responses.
+    pub max_response_chars: Option<usize>,
 }
 
 impl Default for Config {
@@ -45,6 +58,7 @@ impl Default for Config {
             temperature: 0.2,
             timeout_secs: 120,
             raw_field_char_budget: 800,
+            capture: CaptureConfig::default(),
         }
     }
 }
@@ -68,6 +82,21 @@ impl Config {
         })?;
         Ok(config)
     }
+
+    /// Loads only the capture policy for the sensor hot path. This deliberately
+    /// avoids network endpoint validation so a bad distiller config can never
+    /// break recording; malformed config simply disables capture policy.
+    pub fn load_capture() -> CaptureConfig {
+        let Ok(path) = paths::config_file() else {
+            return CaptureConfig::default();
+        };
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            return CaptureConfig::default();
+        };
+        serde_json::from_str::<Config>(&contents)
+            .map(|config| config.capture)
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
@@ -90,5 +119,6 @@ mod tests {
         // Untouched fields keep their defaults.
         assert_eq!(config.endpoint, DEFAULT_ENDPOINT);
         assert_eq!(config.max_tokens, 2048);
+        assert!(config.capture.deny_tools.is_empty());
     }
 }
