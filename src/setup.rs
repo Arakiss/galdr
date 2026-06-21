@@ -71,8 +71,19 @@ fn has_galdr_hook(value: &serde_json::Value) -> bool {
 }
 
 fn is_galdr_hook_command(command: &str) -> bool {
-    let command = command.trim();
-    command == "galdr hook" || command.ends_with("/galdr hook")
+    command.split(';').any(|segment| {
+        let mut segment = segment.trim();
+        for prefix in ["then ", "do "] {
+            if let Some(stripped) = segment.strip_prefix(prefix) {
+                segment = stripped.trim();
+            }
+        }
+
+        let normalized = segment.replace(['"', '\''], "");
+        normalized == "galdr hook"
+            || normalized.starts_with("galdr hook ")
+            || normalized.ends_with("/galdr hook")
+    })
 }
 
 #[cfg(test)]
@@ -85,6 +96,10 @@ mod tests {
         assert!(is_galdr_hook_command(
             "/Users/dolores/.cargo/bin/galdr hook"
         ));
+        assert!(is_galdr_hook_command(
+            "if command -v galdr >/dev/null 2>&1; then galdr hook; elif [ -x \"$HOME/.cargo/bin/galdr\" ]; then \"$HOME/.cargo/bin/galdr\" hook; fi"
+        ));
         assert!(!is_galdr_hook_command("galdr outcome list"));
+        assert!(!is_galdr_hook_command("echo galdr hook"));
     }
 }
