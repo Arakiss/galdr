@@ -53,7 +53,6 @@ pub fn run() -> Result<()> {
             );
             if orphan_count > 0 {
                 println!("warn {orphan_count} skill(s) have missing recording provenance");
-                issues.push("skill provenance has orphans".to_string());
             }
             if draft_count > 0 {
                 println!("warn {draft_count} skill(s) are still drafts");
