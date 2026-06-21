@@ -189,7 +189,7 @@ fn distill_from_installs_and_skills_lists_provenance() {
     std::fs::write(
         &refined,
         format!(
-            "---\nname: galdr-demo\ndescription: \"does a thing\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n"
+            "---\nname: galdr-demo\ndescription: \"does a thing\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
         ),
     )
     .unwrap();
@@ -227,6 +227,110 @@ fn reindex_rebuilds_the_catalog_from_disk() {
     let list = sb.run(&["list"]);
     assert!(list.status.success());
     assert!(stdout(&list).contains("demo"));
+}
+
+#[test]
+fn recording_writes_keep_an_existing_catalog_current_without_a_daemon() {
+    let sb = Sandbox::new();
+    sb.record("first", &[BASH_STATUS]);
+    assert!(sb.run(&["reindex"]).status.success());
+
+    let second = sb.record(
+        "second",
+        &[r#"{"tool_name":"Read","tool_input":{"file_path":"/tmp/input.md"},"tool_response":{}}"#],
+    );
+
+    let list = sb.run(&["list"]);
+    assert!(list.status.success());
+    let listing = stdout(&list);
+    assert!(
+        listing.contains("second"),
+        "list should not read a stale catalog: {listing}"
+    );
+
+    let show = sb.run(&["show", &second]);
+    assert!(show.status.success());
+    let detail = stdout(&show);
+    assert!(
+        detail.contains("/tmp/input.md"),
+        "show should include the newly indexed step: {detail}"
+    );
+}
+
+#[test]
+fn skill_writes_keep_an_existing_catalog_current_without_a_daemon() {
+    let sb = Sandbox::new();
+    let id = sb.record("stale catalog", &[BASH_STATUS]);
+    assert!(sb.run(&["reindex"]).status.success());
+
+    let refined = sb.home().join("refined.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-stale-catalog\ndescription: \"stale catalog check\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    let install = sb
+        .cmd()
+        .args(["distill", &id, "--from"])
+        .arg(&refined)
+        .output()
+        .unwrap();
+    assert!(install.status.success());
+
+    let skills = sb.run(&["skills"]);
+    assert!(skills.status.success());
+    let listing = stdout(&skills);
+    assert!(
+        listing.contains("galdr-stale-catalog"),
+        "skills should not read a stale catalog: {listing}"
+    );
+    assert!(listing.contains(&id));
+}
+
+#[test]
+fn draft_distill_keeps_an_existing_catalog_current_without_a_daemon() {
+    let sb = Sandbox::new();
+    let id = sb.record("draft catalog", &[BASH_STATUS]);
+    assert!(sb.run(&["reindex"]).status.success());
+
+    let draft = sb.run(&["distill", &id]);
+    assert!(draft.status.success());
+
+    let skills = sb.run(&["skills"]);
+    assert!(skills.status.success());
+    let listing = stdout(&skills);
+    assert!(
+        listing.contains("galdr-draft-catalog"),
+        "draft distillation should update an existing catalog: {listing}"
+    );
+    assert!(listing.contains(&id));
+}
+
+#[test]
+fn parametrize_emit_keeps_an_existing_catalog_current_without_a_daemon() {
+    let sb = Sandbox::new();
+    let write = |path: &str| {
+        format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{path}"}},"tool_response":{{}}}}"#
+        )
+    };
+    let a = sb.record("ship", &[BASH_STATUS, &write("/repo-a/out.md")]);
+    let b = sb.record("ship", &[BASH_STATUS, &write("/repo-b/out.md")]);
+    assert!(sb.run(&["reindex"]).status.success());
+
+    let emit = sb.run(&["parametrize", &a, &b, "--emit"]);
+    assert!(emit.status.success());
+
+    let skills = sb.run(&["skills"]);
+    assert!(skills.status.success());
+    let listing = stdout(&skills);
+    assert!(
+        listing.contains("galdr-ship-param"),
+        "parametrize should update an existing catalog: {listing}"
+    );
+    assert!(listing.contains(&a));
 }
 
 #[test]
@@ -312,6 +416,262 @@ fn diff_reports_constants_and_parameters() {
     assert!(report.contains("Constants:"));
 }
 
+#[test]
+fn rec_status_and_capture_policy_work() {
+    let sb = Sandbox::new();
+    assert!(stdout(&sb.run(&["rec", "status"])).contains("no active recording"));
+
+    std::fs::create_dir_all(sb.home().join(".galdr")).unwrap();
+    std::fs::write(
+        sb.home().join(".galdr/config.json"),
+        r#"{"capture":{"deny_tools":["Secret"],"deny_cwd_prefixes":["/private"],"max_response_chars":12}}"#,
+    )
+    .unwrap();
+
+    assert!(sb.run(&["rec", "start", "capture"]).status.success());
+    let id = sb.active_rec_id();
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Secret","tool_input":{"value":"x"},"tool_response":{"token":"abc"}}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+    assert_eq!(sb.span_lines(&id), 0, "denied tools are not recorded");
+
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"stdout":"abcdefghijklmnopqrstuvwxyz"},"cwd":"/tmp"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+    assert_eq!(sb.span_lines(&id), 1);
+    let span = std::fs::read_to_string(sb.home().join(".galdr/spans").join(format!("{id}.jsonl")))
+        .unwrap();
+    assert!(span.contains("galdr_truncated"));
+
+    let status = stdout(&sb.run(&["rec", "status"]));
+    assert!(status.contains("active recording: capture"));
+    assert!(status.contains("steps: 1"));
+}
+
+#[test]
+fn skills_catalog_reports_status_readiness_and_delta() {
+    let sb = Sandbox::new();
+    let id = sb.record("readiness", &[BASH_STATUS]);
+
+    assert!(sb.run(&["distill", &id]).status.success());
+    let draft_listing = stdout(&sb.run(&["skills"]));
+    assert!(draft_listing.contains("galdr-readiness"));
+    assert!(draft_listing.contains("draft"));
+    assert!(draft_listing.contains("readiness"));
+
+    let refined = sb.home().join("refined.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-readiness\ndescription: \"readiness check\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    let install = sb
+        .cmd()
+        .args(["distill", &id, "--from"])
+        .arg(&refined)
+        .output()
+        .unwrap();
+    assert!(install.status.success());
+
+    let final_listing = stdout(&sb.run(&["skills"]));
+    assert!(final_listing.contains("final"));
+    assert!(
+        final_listing.contains("(+"),
+        "readiness delta should show the final skill improved: {final_listing}"
+    );
+
+    let evaluations = stdout(&sb.run(&["evaluations", "--skill", "galdr-readiness"]));
+    assert!(evaluations.contains("readiness_lint"));
+    assert!(evaluations.contains("galdr-readiness"));
+}
+
+#[test]
+fn outcome_usage_and_labels_survive_reindex() {
+    let sb = Sandbox::new();
+    let id = sb.record("outcome", &[BASH_STATUS]);
+    let refined = sb.home().join("outcome.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-outcome\ndescription: \"outcome capture\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    let install = sb
+        .cmd()
+        .args(["distill", &id, "--from"])
+        .arg(&refined)
+        .output()
+        .unwrap();
+    assert!(install.status.success());
+
+    let usage = sb.run(&[
+        "outcome",
+        "usage",
+        "--skill",
+        "galdr-outcome",
+        "--rec",
+        &id,
+        "--task-kind",
+        "smoke",
+        "--outcome",
+        "success",
+        "--retries",
+        "1",
+        "--manual-interventions",
+        "2",
+        "--notes",
+        "worked after one retry",
+    ]);
+    assert!(usage.status.success());
+    assert!(stdout(&usage).contains("usage recorded"));
+
+    let label = sb.run(&[
+        "outcome",
+        "label",
+        "--skill",
+        "galdr-outcome",
+        "--rec",
+        &id,
+        "--evaluator",
+        "human",
+        "--label",
+        "accepted",
+        "--confidence",
+        "0.9",
+        "--notes",
+        "reviewed",
+    ]);
+    assert!(label.status.success());
+    assert!(stdout(&label).contains("outcome recorded"));
+
+    let usage_log = sb.home().join(".galdr/outcomes/skill_usage.jsonl");
+    let outcome_log = sb.home().join(".galdr/outcomes/skill_outcomes.jsonl");
+    assert!(
+        std::fs::read_to_string(usage_log)
+            .unwrap()
+            .contains("success")
+    );
+    assert!(
+        std::fs::read_to_string(outcome_log)
+            .unwrap()
+            .contains("accepted")
+    );
+
+    assert!(sb.run(&["reindex"]).status.success());
+    let listing = stdout(&sb.run(&["outcome", "list", "--skill", "galdr-outcome"]));
+    assert!(listing.contains("success"));
+    assert!(listing.contains("accepted"));
+    assert!(listing.contains("interventions  2"));
+}
+
+#[test]
+fn distill_from_rejects_unfinished_skills() {
+    let sb = Sandbox::new();
+    let id = sb.record("unfinished", &[BASH_STATUS]);
+    let bad = sb.home().join("bad.md");
+    std::fs::write(
+        &bad,
+        "---\nname: galdr-unfinished\ndescription: \"bad\"\n---\n\n## Goal\nx\n## Procedure\ny\n",
+    )
+    .unwrap();
+    let install = sb
+        .cmd()
+        .args(["distill", &id, "--from"])
+        .arg(&bad)
+        .output()
+        .unwrap();
+    assert!(!install.status.success());
+    assert!(String::from_utf8_lossy(&install.stderr).contains("Success criteria"));
+}
+
+#[test]
+fn setup_claude_check_and_print_work_without_mutating_settings() {
+    let sb = Sandbox::new();
+    let missing = stdout(&sb.run(&["setup", "claude", "--check"]));
+    assert!(missing.contains("settings not found"));
+
+    let snippet = stdout(&sb.run(&["setup", "claude", "--print"]));
+    assert!(snippet.contains("PostToolUse"));
+    assert!(snippet.contains("galdr hook"));
+
+    let settings = sb.home().join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(&settings, snippet).unwrap();
+    let configured = stdout(&sb.run(&["setup", "claude", "--check"]));
+    assert!(configured.contains("is configured"));
+}
+
+#[test]
+fn export_omits_raw_by_default_and_can_write_redacted_raw() {
+    let sb = Sandbox::new();
+    let id = sb.record(
+        "export",
+        &[r#"{"tool_name":"Bash","tool_input":{"command":"deploy","api_key":"secret-key"},"tool_response":{"token":"secret-token","ok":true}}"#],
+    );
+
+    let out = sb.home().join("export-default");
+    let export = sb
+        .cmd()
+        .args(["export", &id, "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    assert!(out.join("recording.json").exists());
+    assert!(out.join("steps.md").exists());
+    assert!(out.join("skills.json").exists());
+    assert!(out.join("usage.json").exists());
+    assert!(out.join("outcomes.json").exists());
+    assert!(!out.join("raw.jsonl").exists());
+
+    let redacted = sb.home().join("export-redacted");
+    let export = sb
+        .cmd()
+        .args(["export", &id, "--out"])
+        .arg(&redacted)
+        .arg("--redact")
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    let raw = std::fs::read_to_string(redacted.join("raw.redacted.jsonl")).unwrap();
+    assert!(raw.contains("[REDACTED]"));
+    assert!(!raw.contains("secret-token"));
+    assert!(!raw.contains("secret-key"));
+}
+
+#[test]
+fn doctor_passes_when_claude_hook_is_configured() {
+    let sb = Sandbox::new();
+    let settings = sb.home().join(".claude/settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"galdr hook"}]}]}}"#,
+    )
+    .unwrap();
+    let doctor = sb.run(&["doctor"]);
+    assert!(
+        doctor.status.success(),
+        "{}\n{}",
+        stdout(&doctor),
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    assert!(stdout(&doctor).contains("doctor: ok"));
+}
+
 /// Optional daemon round-trip. Kept robust (generous polling, guaranteed
 /// teardown) but isolated to its own temp HOME so it never disturbs the others.
 #[test]
@@ -320,6 +680,7 @@ fn daemon_indexes_and_answers_queries() {
     let pidfile = sb.home().join(".galdr/galdrd.pid");
     let socket = sb.home().join(".galdr/galdrd.sock");
 
+    assert!(stdout(&sb.run(&["daemon", "status"])).contains("daemon stopped"));
     assert!(sb.run(&["daemon", "--detach"]).status.success());
 
     // A guard that kills the daemon on the way out, even if an assert fails.
@@ -329,7 +690,11 @@ fn daemon_indexes_and_answers_queries() {
             if let Ok(pid) = std::fs::read_to_string(&self.0)
                 && let Ok(pid) = pid.trim().parse::<i32>()
             {
-                let _ = Command::new("kill").arg(pid.to_string()).status();
+                let _ = Command::new("kill")
+                    .arg(pid.to_string())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
             }
         }
     }
@@ -345,6 +710,7 @@ fn daemon_indexes_and_answers_queries() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(ready, "daemon socket never appeared");
+    assert!(stdout(&sb.run(&["daemon", "status"])).contains("daemon running"));
 
     sb.record("daemon demo", &[BASH_STATUS]);
     // Give the close notification a moment to be indexed.
@@ -356,4 +722,8 @@ fn daemon_indexes_and_answers_queries() {
         stdout(&list).contains("daemon demo"),
         "the daemon-backed catalog should list the recording"
     );
+
+    let stop = sb.run(&["daemon", "stop"]);
+    assert!(stop.status.success());
+    assert!(stdout(&stop).contains("daemon stopped"));
 }
