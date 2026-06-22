@@ -41,7 +41,7 @@ jobs:
       # found during a scheduled run. No effect on PR runs.
       issues: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/audit@v1
         with:
           # Do NOT use the `ignore` input here — suppressing an advisory is a

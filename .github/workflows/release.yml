@@ -73,7 +73,7 @@ jobs:
             target: aarch64-apple-darwin
             asset: galdr-aarch64-darwin
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Resolve and validate release tag
@@ -162,7 +162,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - name: Resolve release tag
