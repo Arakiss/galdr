@@ -43,37 +43,63 @@ fn render_title<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
         Screen::Detail => "inspector",
         Screen::Audit => "audit",
     };
-    let line = Line::from(vec![
+    let mut spans = vec![
         Span::styled("galdr", theme::title()),
         Span::styled("  record & replay for agent skills", theme::dim()),
         Span::raw("   ·   "),
         Span::styled(screen, theme::ok()),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+    ];
+    if app.recording_active {
+        spans.push(Span::raw("   "));
+        spans.push(Span::styled("● REC", theme::warn()));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
+    // Typing a filter takes over the status line so the needle is visible.
+    if app.filter_mode {
+        let line = Line::from(vec![
+            Span::styled("/", theme::title()),
+            Span::styled(app.filter.clone(), theme::ok()),
+            Span::styled("▏", theme::title()),
+            Span::styled("   enter apply · esc clear", theme::dim()),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let hints = match app.screen {
         Screen::Recordings => {
-            "↑↓/jk move · enter inspect · d distill · a audit · r replay · o span · ? help · q quit"
+            "jk/↑↓ move · / filter · enter inspect · d distill · a audit · r replay · o span · ? help · q quit"
         }
-        Screen::Detail => "↑↓/jk step · enter raw · o span · esc back · ? help · q quit",
-        Screen::Audit => "↑↓/jk move · esc back · ? help · q quit",
+        Screen::Detail => "jk/↑↓ step · enter raw · o span · esc back · ? help · q quit",
+        Screen::Audit => "jk/↑↓ move · / filter · esc back · ? help · q quit",
     };
-    let line = if app.status.is_empty() {
-        Line::styled(hints, theme::dim())
-    } else {
-        Line::from(vec![
-            Span::styled(format!("{}  ", app.status), theme::ok()),
-            Span::styled(hints, theme::dim()),
-        ])
-    };
-    frame.render_widget(Paragraph::new(line), area);
+    let mut spans = Vec::new();
+    if !app.status.is_empty() {
+        spans.push(Span::styled(format!("{}  ", app.status), theme::ok()));
+    }
+    if !app.filter.is_empty() {
+        spans.push(Span::styled(
+            format!("filter:{}  ", app.filter),
+            theme::warn(),
+        ));
+    }
+    spans.push(Span::styled(hints, theme::dim()));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_recordings<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
-    if app.recordings.is_empty() {
-        let empty = Paragraph::new("No recordings yet. Record one with `galdr rec start <name>`.")
+    if app.rec_view.is_empty() {
+        let msg = if app.filter.is_empty() {
+            "No recordings yet. Record one with `galdr rec start <name>`.".to_string()
+        } else {
+            format!(
+                "No recordings match \"{}\". Press esc to clear the filter.",
+                app.filter
+            )
+        };
+        let empty = Paragraph::new(msg)
             .style(theme::dim())
             .block(block("Recordings"));
         frame.render_widget(empty, area);
@@ -82,7 +108,7 @@ fn render_recordings<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>
 
     let header = Row::new(["", "rec_id", "name", "steps", "recorded"]).style(theme::dim());
     let rows: Vec<Row> = app
-        .recordings
+        .rec_view
         .iter()
         .map(|r| {
             let mark = if r.distilled {
@@ -180,18 +206,25 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
 }
 
 fn render_audit<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
-    if app.skills.is_empty() {
-        let empty =
-            Paragraph::new("No skills distilled yet. Press `d` on a recording to draft one.")
-                .style(theme::dim())
-                .block(block("Audit · provenance"));
+    if app.skill_view.is_empty() {
+        let msg = if app.filter.is_empty() {
+            "No skills distilled yet. Press `d` on a recording to draft one.".to_string()
+        } else {
+            format!(
+                "No skills match \"{}\". Press esc to clear the filter.",
+                app.filter
+            )
+        };
+        let empty = Paragraph::new(msg)
+            .style(theme::dim())
+            .block(block("Audit · provenance"));
         frame.render_widget(empty, area);
         return;
     }
 
     let header = Row::new(["skill", "status", "readiness", "← recording"]).style(theme::dim());
     let rows: Vec<Row> = app
-        .skills
+        .skill_view
         .iter()
         .map(|s| {
             let provenance = format!(
@@ -249,14 +282,23 @@ fn render_overlay<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>, overl
     };
     let rect = centered(area, 80, 70);
     frame.render_widget(Clear, rect);
+    let scrollable = matches!(overlay, Overlay::Raw(_));
+    let foot = if scrollable {
+        " jk/↑↓ scroll · g top · esc close "
+    } else {
+        " esc to close "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(Span::styled(
             format!(" {title} "),
             if warn { theme::warn() } else { theme::title() },
         ))
-        .title_bottom(Span::styled(" esc to close ", theme::dim()));
-    let para = Paragraph::new(body).block(block).wrap(Wrap { trim: false });
+        .title_bottom(Span::styled(foot, theme::dim()));
+    let para = Paragraph::new(body)
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.overlay_scroll, 0));
     frame.render_widget(para, rect);
 }
 
@@ -326,6 +368,9 @@ fn help_body() -> Text<'static> {
     Text::from(vec![
         Line::styled("Recordings", theme::ok()),
         Line::raw("  ↑↓ / j k   move selection"),
+        Line::raw("  g / G      jump to first / last"),
+        Line::raw("  PgUp/PgDn  page up / down"),
+        Line::raw("  /          filter by name or rec_id  (esc clears)"),
         Line::raw("  enter      open the inspector"),
         Line::raw("  d          distill a draft skill (galdr is the only writer)"),
         Line::raw("  a          open the audit / provenance view"),
@@ -334,8 +379,16 @@ fn help_body() -> Text<'static> {
         Line::raw(""),
         Line::styled("Inspector", theme::ok()),
         Line::raw("  ↑↓ / j k   move between steps"),
+        Line::raw("  g / G      first / last step"),
         Line::raw("  enter      show the raw tool_input / tool_response"),
         Line::raw("  esc / h    back to recordings"),
+        Line::raw(""),
+        Line::styled("Raw overlay", theme::ok()),
+        Line::raw("  ↑↓ / j k   scroll line by line"),
+        Line::raw("  PgUp/PgDn  scroll by page · g to top"),
+        Line::raw(""),
+        Line::styled("Audit", theme::ok()),
+        Line::raw("  /          filter skills (esc clears)"),
         Line::raw(""),
         Line::styled("Anywhere", theme::ok()),
         Line::raw("  ?          this help"),
@@ -508,5 +561,88 @@ mod tests {
         assert!(help.contains("keybindings"));
         app.on_key(key(KeyCode::Esc));
         assert!(app.overlay.is_none());
+    }
+
+    fn rec_row(id: &str, name: &str) -> RecordingRow {
+        RecordingRow {
+            rec_id: id.into(),
+            name: name.into(),
+            started_at: "2026-06-19T10:00:00Z".into(),
+            ended_at: Some("2026-06-19T10:05:00Z".into()),
+            steps: 1,
+            cwd: None,
+            distilled: false,
+        }
+    }
+
+    fn many() -> MockCatalog {
+        MockCatalog {
+            recordings: vec![
+                rec_row("01ALPHA", "alpha deploy"),
+                rec_row("01BETA", "beta deploy"),
+                rec_row("01GAMMA", "gamma migrate"),
+            ],
+            skills: vec![],
+            detail: None,
+            raw: vec![],
+        }
+    }
+
+    #[test]
+    fn filter_narrows_the_recordings_list() {
+        let mut app = App::new(many());
+        assert_eq!(app.rec_view.len(), 3);
+
+        app.on_key(key(KeyCode::Char('/')));
+        assert!(app.filter_mode);
+        for c in "alpha".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter)); // apply, leave input mode
+        assert!(!app.filter_mode);
+
+        let view = render_text(&mut app);
+        assert!(view.contains("alpha deploy"));
+        assert!(!view.contains("beta deploy"));
+        assert!(!view.contains("gamma migrate"));
+        assert_eq!(app.rec_view.len(), 1);
+
+        // Esc clears the filter and restores the full list.
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.filter.is_empty());
+        assert_eq!(app.rec_view.len(), 3);
+    }
+
+    #[test]
+    fn g_and_capital_g_jump_to_ends() {
+        let mut app = App::new(many());
+        assert_eq!(app.rec_state.selected(), Some(0));
+        app.on_key(key(KeyCode::Char('G')));
+        assert_eq!(app.rec_state.selected(), Some(2));
+        app.on_key(key(KeyCode::Char('g')));
+        assert_eq!(app.rec_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn raw_overlay_scrolls_and_resets() {
+        let mut app = App::new(fixture());
+        app.on_key(key(KeyCode::Enter)); // inspector
+        app.on_key(key(KeyCode::Enter)); // raw overlay
+        assert!(app.overlay.is_some());
+        assert_eq!(app.overlay_scroll, 0);
+
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.overlay_scroll, 2);
+        app.on_key(key(KeyCode::PageDown));
+        assert_eq!(app.overlay_scroll, 14);
+        app.on_key(key(KeyCode::Char('g')));
+        assert_eq!(app.overlay_scroll, 0);
+
+        // Closing the overlay resets the scroll for the next open.
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.overlay.is_none());
+        assert_eq!(app.overlay_scroll, 0);
     }
 }
