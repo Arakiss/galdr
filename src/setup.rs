@@ -70,9 +70,24 @@ fn has_galdr_hook(value: &serde_json::Value) -> bool {
     }
 }
 
+/// True if `command` invokes `galdr hook`. Accepts the bare `galdr hook`, a
+/// path-qualified `/path/to/galdr hook`, and — crucially — `galdr hook` embedded
+/// in a shell wrapper such as
+/// `if command -v galdr …; then galdr hook; elif …; then "$HOME/.cargo/bin/galdr" hook; fi`,
+/// which is the resilient form many users wire up. It must not be fooled by a
+/// neighbouring `galdr hooks` or `galdr outcome`.
 fn is_galdr_hook_command(command: &str) -> bool {
-    let command = command.trim();
-    command == "galdr hook" || command.ends_with("/galdr hook")
+    // Split on whitespace and shell separators, strip surrounding quotes, then look
+    // for a program token ending in `galdr` immediately followed by the `hook` arg.
+    let tokens: Vec<String> = command
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
+        .map(|t| t.trim_matches(|c| c == '"' || c == '\'').to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    tokens.windows(2).any(|pair| {
+        let prog = pair[0].as_str();
+        (prog == "galdr" || prog.ends_with("/galdr")) && pair[1] == "hook"
+    })
 }
 
 #[cfg(test)]
@@ -86,5 +101,20 @@ mod tests {
             "/Users/dolores/.cargo/bin/galdr hook"
         ));
         assert!(!is_galdr_hook_command("galdr outcome list"));
+    }
+
+    #[test]
+    fn recognizes_galdr_hook_wrapped_in_a_shell_conditional() {
+        // The resilient form people actually wire up: a shell `if/elif` that finds
+        // galdr on PATH or falls back to the cargo bin. Both branches invoke it.
+        let wrapped = r#"if command -v galdr >/dev/null 2>&1; then galdr hook; elif [ -x "$HOME/.cargo/bin/galdr" ]; then "$HOME/.cargo/bin/galdr" hook; fi"#;
+        assert!(is_galdr_hook_command(wrapped));
+    }
+
+    #[test]
+    fn does_not_match_other_galdr_subcommands_or_lookalikes() {
+        assert!(!is_galdr_hook_command("galdr hooks"));
+        assert!(!is_galdr_hook_command("command -v galdr"));
+        assert!(!is_galdr_hook_command("echo galdr && run hook"));
     }
 }
