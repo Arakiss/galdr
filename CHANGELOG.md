@@ -25,13 +25,44 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
   default; `--include-raw` and `--redact` are explicit raw-export paths.
 - Optional capture policy in `~/.galdr/config.json` for future recordings
   (`deny_tools`, `deny_cwd_prefixes`, `max_response_chars`).
+- `GALDR_ROOT` and `GALDR_SKILLS_ROOT` environment overrides relocate the data and
+  skills roots, enabling hermetic tests, throwaway profiles, and CI without hijacking
+  `$HOME`. They also provide an escape hatch from the Unix-socket path-length limit.
+- TUI: a substring filter (`/`) over recordings and skills, first/last (`g`/`G`) and
+  page (PgUp/PgDn) navigation, a scrollable raw-payload overlay, and a live `● REC`
+  indicator in the title while a recording is active.
 
 ### Changed
 
 - Final `galdr distill <rec_id> --from <file>` installs now validate the refined skill
-  has frontmatter, required sections, and no draft markers.
+  has frontmatter, required sections, and no draft markers. The frontmatter check is
+  structural — it requires a closing `---` and the keys inside the block, not just the
+  substrings anywhere in the file.
+- `galdr export --redact` now also redacts secret-shaped tokens embedded in string
+  values (API keys pasted into a command or URL), not only values under a sensitive key.
+- Re-distilling over an existing skill warns before overwriting, loudly when the existing
+  `SKILL.md` was already a finished (refined) skill rather than a draft.
+- A closed recording is `fsync`'d to disk on `galdr rec stop`, so it is durable without
+  paying an `fsync` on the sensor's hot path (which stays instantaneous).
+- The skill readiness delta is computed inside a transaction, so a concurrent writer can
+  no longer make it stale.
 - The no-daemon catalog fallback now stays current after recording closes, draft writes,
   final skill installs, and parametrized skill emits.
+
+### Fixed
+
+- `galdr doctor` and `galdr setup claude --check` recognize a `galdr hook` invocation
+  wrapped in a shell conditional (the resilient PATH-with-cargo-bin-fallback form),
+  instead of reporting a correctly-wired hook as missing.
+- `galdr daemon --detach` verifies the daemon actually answered on the control socket
+  before reporting success, and fails fast with an actionable message when the socket
+  path would exceed the platform's `SUN_LEN` limit.
+- `galdr outcome usage|label` warns when the target skill is not installed, instead of
+  silently recording it with a null skill hash and poisoning the supervised-data lane.
+- Parametrized skills no longer corrupt their Markdown when a recorded value contains a
+  backtick or a newline.
+- The diff and parametrize "steps matched" line no longer shows `0/0` for empty recordings.
+- `galdr distill --auto` raw-payload truncation no longer overshoots the configured budget.
 
 ## [0.2.0] - 2026-06-19
 

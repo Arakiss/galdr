@@ -179,6 +179,15 @@ The sensor reads the harness fields from stdin (`tool_name`, `tool_input`,
 `tool_response`, `cwd`, `session_id`, `transcript_path`) and is a no-op when no
 recording is active.
 
+If you prefer a resilient command that finds `galdr` on `PATH` and falls back to the
+cargo bin, that form works too and is recognized by `galdr doctor` / `setup claude
+--check`:
+
+```sh
+if command -v galdr >/dev/null 2>&1; then galdr hook; \
+elif [ -x "$HOME/.cargo/bin/galdr" ]; then "$HOME/.cargo/bin/galdr" hook; fi
+```
+
 ## On-disk layout
 
 ```
@@ -198,6 +207,11 @@ The span is the raw source of truth: append-only, immutable, inspectable. The SQ
 catalog is an **index, never the truth** — it stores one-line step summaries (no raw
 blobs), readiness/evaluation rows, and outcome indexes. `galdr reindex` rebuilds it from
 spans, recordings, skills, and outcome logs at any time.
+
+The root is `~/.galdr` by default. Set `GALDR_ROOT` to relocate it (and
+`GALDR_SKILLS_ROOT` to relocate the skills directory) — useful for hermetic tests,
+throwaway profiles, CI, or to keep the daemon's Unix socket path under the platform's
+length limit.
 
 `config.json` may also include optional capture policy for future recordings:
 
