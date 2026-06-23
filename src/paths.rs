@@ -16,6 +16,10 @@
 //!
 //! The SQLite catalog is an **index, never the truth**: it can be deleted and
 //! rebuilt at any time from the spans and recordings with `galdr reindex`.
+//!
+//! The root is `~/.galdr` by default but can be relocated with the `GALDR_ROOT`
+//! environment variable (and the skills root with `GALDR_SKILLS_ROOT`), which is
+//! what makes hermetic tests, profiles, and CI possible without hijacking `$HOME`.
 
 use std::path::PathBuf;
 
@@ -28,8 +32,23 @@ fn home() -> Result<PathBuf> {
     Ok(base.home_dir().to_path_buf())
 }
 
-/// galdr's data root: `~/.galdr`.
+/// Reads a directory override from the environment, ignoring an empty value so an
+/// accidental `GALDR_ROOT=` never points the root at the filesystem root.
+fn env_dir(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+/// galdr's data root: `$GALDR_ROOT` if set, else `~/.galdr`.
+///
+/// The override is what makes hermetic tests, throwaway profiles, and CI possible
+/// without hijacking the whole `$HOME`. It also gives a way out of the Unix-socket
+/// path-length limit (`SUN_LEN`): point the root somewhere short.
 pub fn galdr_root() -> Result<PathBuf> {
+    if let Some(root) = env_dir("GALDR_ROOT") {
+        return Ok(root);
+    }
     Ok(home()?.join(".galdr"))
 }
 
@@ -106,8 +125,11 @@ pub fn claude_settings() -> Result<PathBuf> {
     Ok(home()?.join(".claude").join("settings.json"))
 }
 
-/// Skills root: `~/.agents/skills`.
+/// Skills root: `$GALDR_SKILLS_ROOT` if set, else `~/.agents/skills`.
 pub fn skills_root() -> Result<PathBuf> {
+    if let Some(root) = env_dir("GALDR_SKILLS_ROOT") {
+        return Ok(root);
+    }
     Ok(home()?.join(".agents").join("skills"))
 }
 
