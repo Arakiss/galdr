@@ -389,6 +389,30 @@ pub fn upsert_skill(
     installed_at: Option<&str>,
     status: &str,
 ) -> Result<()> {
+    // The delta is read-modify-write against the previous score, so the SELECT and
+    // the upsert must be one atomic step, or a concurrent writer (a CLI invocation
+    // racing the daemon) could slip between them and make the delta stale. When the
+    // caller already holds a transaction (e.g. `reindex`), reuse it — SQLite has no
+    // nested transactions — otherwise open our own.
+    if conn.is_autocommit() {
+        let tx = conn.unchecked_transaction()?;
+        upsert_skill_in_txn(&tx, skill_name, rec_id, skill_path, installed_at, status)?;
+        tx.commit()?;
+        Ok(())
+    } else {
+        upsert_skill_in_txn(conn, skill_name, rec_id, skill_path, installed_at, status)
+    }
+}
+
+/// The body of [`upsert_skill`], run inside whichever transaction the caller holds.
+fn upsert_skill_in_txn(
+    conn: &Connection,
+    skill_name: &str,
+    rec_id: Option<&str>,
+    skill_path: &str,
+    installed_at: Option<&str>,
+    status: &str,
+) -> Result<()> {
     let readiness = analyze_skill_file(skill_path, rec_id);
     let previous_score = conn
         .query_row(
