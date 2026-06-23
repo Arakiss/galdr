@@ -94,6 +94,9 @@ pub fn start(name: Option<String>) -> Result<()> {
 pub fn stop() -> Result<()> {
     let active = read_active().context("no active recording")?;
     let span_path = paths::span_file(&active.rec_id)?;
+    // Durably persist the span before we declare the recording closed. Best-effort:
+    // a sync failure must not block stopping (the events are already in the file).
+    let _ = span::fsync(&span_path);
     let events = span::read_span(&span_path).unwrap_or_default();
     let steps = events.len();
     let cwd = events.last().and_then(|e| e.cwd.clone());
