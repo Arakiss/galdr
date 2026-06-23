@@ -109,6 +109,14 @@ fn redact_value(value: &mut serde_json::Value) {
                 redact_value(value);
             }
         }
+        // A secret is just as likely to ride inside a string value — a token pasted
+        // into a Bash command, a key in a URL — where no sensitive *key* guards it.
+        // Catch the unmistakable shapes so key-based redaction is not the only net.
+        serde_json::Value::String(text) => {
+            if let Some(clean) = redact_secrets_in_text(text) {
+                *text = clean;
+            }
+        }
         _ => {}
     }
 }
@@ -126,4 +134,109 @@ fn is_sensitive_key(key: &str) -> bool {
     ]
     .iter()
     .any(|needle| key.contains(needle))
+}
+
+/// Well-known secret token shapes. Conservative on purpose: every prefix here is a
+/// credential format, so false positives are near zero while the worst leaks (a
+/// provider key pasted into a command) are caught.
+const SECRET_PREFIXES: &[&str] = &[
+    "sk-",         // OpenAI / Anthropic-style API keys
+    "sk_live_",    // Stripe live
+    "sk_test_",    // Stripe test
+    "ghp_",        // GitHub personal access token
+    "gho_",        // GitHub OAuth
+    "ghu_",        // GitHub user-to-server
+    "ghs_",        // GitHub server-to-server
+    "github_pat_", // GitHub fine-grained PAT
+    "xoxb-",       // Slack bot token
+    "xoxp-",       // Slack user token
+    "AKIA",        // AWS access key id
+    "ASIA",        // AWS temporary access key id
+    "AIza",        // Google API key
+    "-----BEGIN",  // PEM private key block
+];
+
+/// Replaces any whitespace-delimited token that matches a known secret shape with
+/// `[REDACTED]`, leaving the rest of the string intact so the step stays readable.
+/// Returns `None` when nothing matched (so callers can skip the allocation).
+fn redact_secrets_in_text(text: &str) -> Option<String> {
+    if !text
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')'))
+        .any(looks_like_secret)
+    {
+        return None;
+    }
+    let redacted: String = text
+        .split_inclusive(|c: char| {
+            c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')')
+        })
+        .map(|chunk| {
+            // Split the trailing delimiter (if any) off the token before matching.
+            let (token, delim) = match chunk.char_indices().last() {
+                Some((i, c))
+                    if c.is_whitespace()
+                        || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')') =>
+                {
+                    (&chunk[..i], &chunk[i..])
+                }
+                _ => (chunk, ""),
+            };
+            if looks_like_secret(token) {
+                format!("[REDACTED]{delim}")
+            } else {
+                chunk.to_string()
+            }
+        })
+        .collect();
+    Some(redacted)
+}
+
+fn looks_like_secret(token: &str) -> bool {
+    SECRET_PREFIXES
+        .iter()
+        .any(|prefix| token.starts_with(prefix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_a_secret_embedded_in_a_command_string() {
+        let mut v = serde_json::json!({ "command": "curl -H 'Authorization: Bearer sk-abc123XYZ' https://api" });
+        redact_value(&mut v);
+        let s = v["command"].as_str().unwrap();
+        assert!(s.contains("[REDACTED]"), "got: {s}");
+        assert!(!s.contains("sk-abc123XYZ"));
+        // Non-secret tokens around it survive.
+        assert!(s.contains("curl"));
+    }
+
+    #[test]
+    fn leaves_ordinary_strings_untouched() {
+        let mut v = serde_json::json!({ "command": "git status --short && cargo build" });
+        let before = v.clone();
+        redact_value(&mut v);
+        assert_eq!(v, before, "no secret shape, nothing to redact");
+    }
+
+    #[test]
+    fn still_redacts_by_sensitive_key() {
+        let mut v = serde_json::json!({ "api_key": "whatever-it-is", "ok": true });
+        redact_value(&mut v);
+        assert_eq!(v["api_key"], serde_json::json!("[REDACTED]"));
+        assert_eq!(v["ok"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn recognizes_common_secret_prefixes() {
+        for token in ["ghp_0123456789", "AKIAIOSFODNN7EXAMPLE", "xoxb-12345"] {
+            assert!(
+                looks_like_secret(token),
+                "{token} should look like a secret"
+            );
+        }
+        assert!(!looks_like_secret("git"));
+        assert!(!looks_like_secret("status"));
+    }
 }
