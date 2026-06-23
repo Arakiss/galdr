@@ -434,6 +434,7 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
                 manual_intervention_count: manual_interventions,
                 notes,
             })?;
+            warn_if_skill_missing(&event.skill_name);
             println!(
                 "usage recorded: {} {} outcome={} rec_id={}",
                 event.event_id, event.skill_name, event.outcome, event.rec_id
@@ -455,6 +456,7 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
                 confidence,
                 notes,
             })?;
+            warn_if_skill_missing(&event.skill_name);
             println!(
                 "outcome recorded: {} {} {}:{} confidence={:.2}",
                 event.event_id,
@@ -474,6 +476,20 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Warns (without failing) when an outcome is recorded for a skill that is not
+/// installed. The event is still written — a skill can be uninstalled after use —
+/// but a typo'd name would otherwise silently poison the supervised-data lane.
+fn warn_if_skill_missing(skill_name: &str) {
+    if !outcome::skill_exists(skill_name) {
+        eprintln!(
+            "warning: skill '{skill_name}' is not installed under {}; recording it anyway",
+            paths::skills_root()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "the skills root".to_string())
+        );
+    }
 }
 
 fn cmd_diff(a: &str, b: &str) -> anyhow::Result<()> {
