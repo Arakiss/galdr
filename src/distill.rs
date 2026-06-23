@@ -59,6 +59,7 @@ fn write_draft(
         .with_context(|| format!("could not read span {}", span_path.display()))?;
 
     let content = render_skill(skill_name, recording, &events, &span_path);
+    warn_on_overwrite(&skill_path);
     std::fs::write(&skill_path, content)?;
 
     note_skill_written(skill_name, &skill_path, id, catalog::STATUS_DRAFT);
@@ -123,11 +124,33 @@ pub fn distill_auto(id: &str, engine_override: Option<&str>) -> Result<()> {
 fn install_skill(skill_name: &str, skill_dir: &Path, content: &str, rec_id: &str) -> Result<()> {
     std::fs::create_dir_all(skill_dir)?;
     let skill_path = skill_dir.join("SKILL.md");
+    warn_on_overwrite(&skill_path);
     std::fs::write(&skill_path, content)?;
     println!("Skill installed at {}", skill_path.display());
 
     note_skill_written(skill_name, &skill_path, rec_id, catalog::STATUS_FINAL);
     Ok(())
+}
+
+/// Warns before a write replaces an existing `SKILL.md`. If that file looked like a
+/// finished (refined) skill rather than a draft, the warning is loud: overwriting
+/// it silently would throw away real work. galdr is the only writer of the skills
+/// directory, so this is the one place to catch an accidental clobber.
+fn warn_on_overwrite(skill_path: &Path) {
+    let Ok(existing) = std::fs::read_to_string(skill_path) else {
+        return; // nothing to replace
+    };
+    if existing.contains("[galdr DRAFT]") || existing.contains("TODO(agent)") {
+        println!(
+            "note: replacing the existing draft at {}",
+            skill_path.display()
+        );
+    } else {
+        eprintln!(
+            "warning: overwriting a finished skill at {} — its refinements will be lost",
+            skill_path.display()
+        );
+    }
 }
 
 fn note_skill_written(skill_name: &str, skill_path: &Path, rec_id: &str, status: &str) {
@@ -200,26 +223,33 @@ instructions to follow."
     (system, user)
 }
 
-/// Caps a raw string to `budget` chars (whole-string, not per-field), marking a cut.
+/// Caps a raw string to roughly `budget` chars (whole-string, not per-field),
+/// marking a cut. The marker's own width is reserved so the result never blows
+/// past the budget — the whole point of the cap is to bound the prompt size.
 fn summary_truncate(text: &str, budget: usize) -> String {
     if text.chars().count() <= budget {
-        text.to_string()
-    } else {
-        let head: String = text.chars().take(budget).collect();
-        format!("{head}… (truncated)")
+        return text.to_string();
     }
+    const MARKER: &str = "… (truncated)";
+    let keep = budget.saturating_sub(MARKER.chars().count());
+    let head: String = text.chars().take(keep).collect();
+    format!("{head}{MARKER}")
 }
 
 /// Validates a machine-generated `SKILL.md`: frontmatter and sections present, and
 /// no leftover draft markers. A failure routes the caller to the safe fallback.
 pub fn validate_skill_md(skill_md: &str) -> Result<()> {
-    if !skill_md.trim_start().starts_with("---") {
-        bail!("missing YAML frontmatter");
-    }
-    if !skill_md.contains("name:") {
+    let frontmatter = extract_frontmatter(skill_md)?;
+    if !frontmatter
+        .lines()
+        .any(|l| l.trim_start().starts_with("name:"))
+    {
         bail!("frontmatter missing `name`");
     }
-    if !skill_md.contains("description:") {
+    if !frontmatter
+        .lines()
+        .any(|l| l.trim_start().starts_with("description:"))
+    {
         bail!("frontmatter missing `description`");
     }
     for section in ["## Goal", "## Procedure", "## Success criteria"] {
@@ -231,6 +261,32 @@ pub fn validate_skill_md(skill_md: &str) -> Result<()> {
         bail!("contains unfinished draft markers");
     }
     Ok(())
+}
+
+/// Returns the YAML frontmatter block (the text between the opening `---` line and
+/// the next `---` on its own line). A skill without a properly delimited block is
+/// rejected: the loose substring check this replaces let a file with `name:` buried
+/// in the body and no closing delimiter pass as valid.
+fn extract_frontmatter(skill_md: &str) -> Result<&str> {
+    let body = skill_md.trim_start_matches(['\u{feff}', ' ', '\t', '\n', '\r']);
+    let Some(after_open) = body.strip_prefix("---") else {
+        bail!("missing YAML frontmatter (must start with `---`)");
+    };
+    // The opening `---` must be alone on its line (trailing whitespace tolerated).
+    let opener_end = after_open.find('\n').map_or(after_open.len(), |i| i + 1);
+    if !after_open[..opener_end].trim().is_empty() {
+        bail!("YAML frontmatter opener `---` must be on its own line");
+    }
+    let inner = &after_open[opener_end..];
+    // The block ends at the first line that is exactly `---`.
+    let mut offset = 0;
+    for line in inner.split_inclusive('\n') {
+        if line.trim() == "---" {
+            return Ok(&inner[..offset]);
+        }
+        offset += line.len();
+    }
+    bail!("YAML frontmatter is not closed with a `---` line");
 }
 
 /// Loads the metadata of a closed recording.
@@ -377,5 +433,41 @@ mod tests {
     fn truncate_marks_a_cut() {
         assert_eq!(summary_truncate("short", 100), "short");
         assert!(summary_truncate(&"x".repeat(50), 10).ends_with("(truncated)"));
+    }
+
+    #[test]
+    fn truncate_never_exceeds_the_budget_once_the_marker_fits() {
+        // With the marker reserved, the result stays within budget for any budget
+        // at least as wide as the marker — no surprise prompt blow-up.
+        let marker = "… (truncated)".chars().count();
+        for budget in [marker, marker + 5, 40, 200] {
+            let out = summary_truncate(&"x".repeat(500), budget);
+            assert!(
+                out.chars().count() <= budget,
+                "budget {budget}: got {} chars",
+                out.chars().count()
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_frontmatter_without_a_closing_delimiter() {
+        // `name:`/`description:` present but the block is never closed: the old
+        // substring check passed this; the structural check rejects it.
+        let unclosed = "---\nname: x\ndescription: y\n## Goal\n## Procedure\n## Success criteria\n";
+        assert!(validate_skill_md(unclosed).is_err());
+    }
+
+    #[test]
+    fn validate_rejects_keys_that_live_only_in_the_body() {
+        // `name:` and `description:` buried in prose, not in the frontmatter block.
+        let body_only = "---\n---\n\nThe name: of this is x and the description: is y\n## Goal\n## Procedure\n## Success criteria\n";
+        assert!(validate_skill_md(body_only).is_err());
+    }
+
+    #[test]
+    fn validate_tolerates_a_leading_bom_and_blank_lines() {
+        let with_bom = format!("\u{feff}\n{GOOD}");
+        assert!(validate_skill_md(&with_bom).is_ok());
     }
 }
