@@ -93,11 +93,31 @@ pub fn recording_file(rec_id: &str) -> Result<PathBuf> {
 }
 
 /// Creates the data directories if missing. Idempotent.
+///
+/// The root is locked to `0700`: spans hold raw `tool_input`/`tool_response`, which
+/// may contain secrets, and the catalog reveals project paths. Another local user
+/// must not be able to read them, so we tighten the root every time (cheap, and it
+/// repairs a root that predates this hardening or was created with a loose umask).
 pub fn ensure_dirs() -> Result<()> {
+    let root = galdr_root()?;
+    std::fs::create_dir_all(&root)?;
+    restrict_to_owner(&root);
     std::fs::create_dir_all(spans_dir()?)?;
     std::fs::create_dir_all(recordings_dir()?)?;
     std::fs::create_dir_all(outcomes_dir()?)?;
     Ok(())
+}
+
+/// Best-effort `chmod 0700` on a path we own. Failure is non-fatal: tightening
+/// permissions must never block recording. No-op on platforms without Unix perms.
+fn restrict_to_owner(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Daemon control socket: `~/.galdr/galdrd.sock`.
@@ -140,6 +160,47 @@ pub fn skills_root() -> Result<PathBuf> {
 }
 
 /// A distilled skill's directory: `~/.agents/skills/<name>`.
+///
+/// The name must be a single, safe path component. Recording-derived names are
+/// already safe (slugify strips everything but alphanumerics and dashes), but
+/// `galdr link --skill <name>` and `galdr outcome --skill <name>` take the name
+/// raw — without this guard, `--skill ../../x` would escape the skills root and let
+/// galdr create or follow a symlink anywhere the user can write.
 pub fn skill_dir(name: &str) -> Result<PathBuf> {
+    validate_skill_name(name)?;
     Ok(skills_root()?.join(name))
+}
+
+/// Refuses a skill directory that already exists as a symlink, so a subsequent
+/// `create_dir_all` / write cannot follow it to clobber a file outside the skills
+/// root. galdr is the only writer of these directories; a symlink there is not ours.
+pub fn ensure_not_symlinked(dir: &std::path::Path) -> Result<()> {
+    use anyhow::bail;
+    if let Ok(meta) = std::fs::symlink_metadata(dir)
+        && meta.file_type().is_symlink()
+    {
+        bail!(
+            "skill directory {} is a symlink; refusing to write through it",
+            dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// Rejects a skill name that is not a single safe path component.
+fn validate_skill_name(name: &str) -> Result<()> {
+    use anyhow::bail;
+    if name.is_empty() {
+        bail!("skill name cannot be empty");
+    }
+    if name == "." || name == ".." {
+        bail!("invalid skill name '{name}'");
+    }
+    if name.contains('/') || name.contains('\\') {
+        bail!("skill name '{name}' must not contain a path separator");
+    }
+    if name.contains('\0') || name.chars().any(|c| c.is_control()) {
+        bail!("skill name contains a control character");
+    }
+    Ok(())
 }

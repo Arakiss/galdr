@@ -46,11 +46,20 @@ pub fn run() -> Result<()> {
         None => return Ok(()),
     };
 
+    // Cap how much we read: a hostile or buggy harness could pipe an enormous
+    // payload, and an unbounded `read_to_string` would OOM-abort the process before
+    // `main`'s panic guard can run — breaking the "never break the session" contract.
+    // A real PostToolUse event is kilobytes; 16 MiB is a generous ceiling.
+    const MAX_HOOK_BYTES: u64 = 16 * 1024 * 1024;
     let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
+    std::io::stdin()
+        .take(MAX_HOOK_BYTES)
+        .read_to_string(&mut buf)?;
     if buf.trim().is_empty() {
         return Ok(());
     }
+    // If the read hit the cap, the JSON is almost certainly truncated; parsing fails
+    // and the event is dropped (the sensor still exits 0), which is the safe outcome.
     let input: HookInput = serde_json::from_str(&buf)?;
 
     // Session scoping: a single global `active` flag means every concurrent agent

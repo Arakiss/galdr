@@ -15,10 +15,10 @@ pub fn export_recording(id: &str, out: &Path, include_raw: bool, redact: bool) -
     let recording_json = std::fs::read_to_string(&rec_path)
         .with_context(|| format!("recording {id} not found. Did you run `galdr rec stop`?"))?;
     let recording: record::Recording = serde_json::from_str(&recording_json)?;
-    std::fs::write(
-        out.join("recording.json"),
-        serde_json::to_string_pretty(&recording)?,
-    )?;
+    // With --redact, every exported file is scrubbed, not just the raw span: a step
+    // summary (a Bash command) or a usage note can carry a secret just as a raw
+    // payload can. An export marketed as redacted must actually be redacted.
+    write_json(&out.join("recording.json"), &recording, redact)?;
 
     let conn = catalog::open_in_memory_indexed()?;
     if let Some(detail) = catalog::show_recording(&conn, id)? {
@@ -27,7 +27,7 @@ pub fn export_recording(id: &str, out: &Path, include_raw: bool, redact: bool) -
         steps.push_str(&format!(
             "- rec_id: `{}`\n- name: `{}`\n- steps: {}\n\n",
             recording.rec_id,
-            recording.name,
+            maybe_redact_text(&recording.name, redact),
             detail.steps.len()
         ));
         steps.push_str("## Steps\n\n");
@@ -36,7 +36,7 @@ pub fn export_recording(id: &str, out: &Path, include_raw: bool, redact: bool) -
                 "{}. **{}** — {}\n",
                 step.seq + 1,
                 step.tool_name,
-                step.summary
+                maybe_redact_text(&step.summary, redact)
             ));
         }
         std::fs::write(out.join("steps.md"), steps)?;
@@ -46,27 +46,18 @@ pub fn export_recording(id: &str, out: &Path, include_raw: bool, redact: bool) -
         .into_iter()
         .filter(|skill| skill.rec_id.as_deref() == Some(id))
         .collect();
-    std::fs::write(
-        out.join("skills.json"),
-        serde_json::to_string_pretty(&skills)?,
-    )?;
+    write_json(&out.join("skills.json"), &skills, redact)?;
     let usages: Vec<_> = catalog::list_skill_usage(&conn, None)?
         .into_iter()
         .filter(|usage| usage.rec_id == id)
         .collect();
-    std::fs::write(
-        out.join("usage.json"),
-        serde_json::to_string_pretty(&usages)?,
-    )?;
+    write_json(&out.join("usage.json"), &usages, redact)?;
 
     let outcomes: Vec<_> = catalog::list_skill_outcomes(&conn, None)?
         .into_iter()
         .filter(|outcome| outcome.rec_id.as_deref() == Some(id))
         .collect();
-    std::fs::write(
-        out.join("outcomes.json"),
-        serde_json::to_string_pretty(&outcomes)?,
-    )?;
+    write_json(&out.join("outcomes.json"), &outcomes, redact)?;
 
     if include_raw || redact {
         if include_raw && !redact {
@@ -91,6 +82,25 @@ pub fn export_recording(id: &str, out: &Path, include_raw: bool, redact: bool) -
 
     println!("export written to {}", out.display());
     Ok(())
+}
+
+/// Writes a value as pretty JSON, redacting it first when `redact` is set.
+fn write_json<T: serde::Serialize>(path: &Path, value: &T, redact: bool) -> Result<()> {
+    let mut json = serde_json::to_value(value)?;
+    if redact {
+        redact_value(&mut json);
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&json)?)?;
+    Ok(())
+}
+
+/// Scrubs secret-shaped tokens from a free-text string when `redact` is set.
+fn maybe_redact_text(text: &str, redact: bool) -> String {
+    if redact {
+        redact_secrets_in_text(text).unwrap_or_else(|| text.to_string())
+    } else {
+        text.to_string()
+    }
 }
 
 fn redact_value(value: &mut serde_json::Value) {
@@ -150,16 +160,29 @@ const SECRET_PREFIXES: &[&str] = &[
     "github_pat_", // GitHub fine-grained PAT
     "xoxb-",       // Slack bot token
     "xoxp-",       // Slack user token
+    "xoxa-",       // Slack app token
+    "xoxr-",       // Slack refresh token
     "AKIA",        // AWS access key id
     "ASIA",        // AWS temporary access key id
     "AIza",        // Google API key
-    "-----BEGIN",  // PEM private key block
+    "ya29.",       // Google OAuth access token
+    "glpat-",      // GitLab personal access token
+    "npm_",        // npm token
+    "shpat_",      // Shopify access token
+    "shpss_",      // Shopify shared secret
+    "eyJ",         // JWT (base64 of {"alg...) — header of almost every JWT
+    "-----BEGIN",  // PEM key block opener (the whole block is also redacted below)
 ];
 
 /// Replaces any whitespace-delimited token that matches a known secret shape with
 /// `[REDACTED]`, leaving the rest of the string intact so the step stays readable.
 /// Returns `None` when nothing matched (so callers can skip the allocation).
 fn redact_secrets_in_text(text: &str) -> Option<String> {
+    // A PEM block spans multiple lines; redact the whole body, not just the marker.
+    if let Some(pem_free) = redact_pem_blocks(text) {
+        // Recurse to also catch token-shaped secrets in the remaining text.
+        return Some(redact_secrets_in_text(&pem_free).unwrap_or(pem_free));
+    }
     if !text
         .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')'))
         .any(looks_like_secret)
@@ -197,6 +220,46 @@ fn looks_like_secret(token: &str) -> bool {
         .any(|prefix| token.starts_with(prefix))
 }
 
+/// Replaces the entire body of any PEM block (`-----BEGIN … -----END …-----`) with
+/// a single `[REDACTED]`, so a private key is never disclosed past its first line.
+/// Returns `None` if no block is present.
+fn redact_pem_blocks(text: &str) -> Option<String> {
+    const BEGIN: &str = "-----BEGIN";
+    if !text.contains(BEGIN) {
+        return None;
+    }
+    let mut out = String::new();
+    let mut rest = text;
+    let mut redacted_any = false;
+    while let Some(start) = rest.find(BEGIN) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        // A PEM block ends at the line after its `-----END …-----`.
+        if let Some(end_marker) = after.find("-----END")
+            && let Some(end_dashes) = after[end_marker..].find("-----\n")
+        {
+            let block_end = end_marker + end_dashes + "-----".len();
+            out.push_str("[REDACTED PEM BLOCK]");
+            rest = &after[block_end..];
+            redacted_any = true;
+        } else if let Some(end_marker) = after.find("-----END")
+            && let Some(end_dashes) = after[end_marker..].rfind("-----")
+        {
+            // Final block with no trailing newline.
+            let block_end = end_marker + end_dashes + "-----".len();
+            out.push_str("[REDACTED PEM BLOCK]");
+            rest = &after[block_end..];
+            redacted_any = true;
+        } else {
+            out.push_str(after);
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    redacted_any.then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,7 +293,15 @@ mod tests {
 
     #[test]
     fn recognizes_common_secret_prefixes() {
-        for token in ["ghp_0123456789", "AKIAIOSFODNN7EXAMPLE", "xoxb-12345"] {
+        for token in [
+            "ghp_0123456789",
+            "AKIAIOSFODNN7EXAMPLE",
+            "xoxb-12345",
+            "glpat-abcdefghij",
+            "ya29.aBcDeF",
+            "npm_0123456789",
+            "eyJhbGciOiJIUzI1NiJ9",
+        ] {
             assert!(
                 looks_like_secret(token),
                 "{token} should look like a secret"
@@ -238,5 +309,23 @@ mod tests {
         }
         assert!(!looks_like_secret("git"));
         assert!(!looks_like_secret("status"));
+    }
+
+    #[test]
+    fn redacts_a_whole_pem_private_key_block() {
+        let text = "key:\n-----BEGIN RSA PRIVATE KEY-----\nMIIEoQIDsecretAQAB\n-----END RSA PRIVATE KEY-----\ndone";
+        let out = redact_secrets_in_text(text).expect("PEM should trigger redaction");
+        assert!(out.contains("[REDACTED PEM BLOCK]"));
+        assert!(!out.contains("MIIEoQID"));
+        assert!(out.contains("done"));
+    }
+
+    #[test]
+    fn redact_text_helper_only_acts_when_asked() {
+        let secret = "run with token ghp_SECRETabc123";
+        assert!(maybe_redact_text(secret, false).contains("ghp_SECRETabc123"));
+        let redacted = maybe_redact_text(secret, true);
+        assert!(!redacted.contains("ghp_SECRETabc123"));
+        assert!(redacted.contains("[REDACTED]"));
     }
 }
