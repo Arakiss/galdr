@@ -75,6 +75,11 @@ enum Commands {
         /// Engine for `--auto`: mlx-http, mlx-subprocess, or agent.
         #[arg(long, value_name = "ENGINE", requires = "auto")]
         engine: Option<String>,
+        /// Name the skill (slugified) instead of the mechanical `galdr-<slug>`.
+        /// galdr supplies the mechanism; choosing a memorable, descriptive name is
+        /// the caller's job — galdr does not guess one.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
         /// Refuse to install unless the skill is impeccable: optimization and
         /// documented-danger warnings also block, not just hard errors.
         #[arg(long)]
@@ -365,12 +370,24 @@ fn main() {
             draft,
             auto,
             engine,
+            name,
             strict,
         } => {
             if auto {
-                exit_on_error(distill::distill_auto(&id, engine.as_deref(), strict))
+                exit_on_error(distill::distill_auto(
+                    &id,
+                    engine.as_deref(),
+                    strict,
+                    name.as_deref(),
+                ))
             } else {
-                exit_on_error(distill::distill(&id, from.as_deref(), draft, strict))
+                exit_on_error(distill::distill(
+                    &id,
+                    from.as_deref(),
+                    draft,
+                    strict,
+                    name.as_deref(),
+                ))
             }
         }
         Commands::List { json } => exit_on_error(cmd_list(json)),

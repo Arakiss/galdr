@@ -244,6 +244,30 @@ fn default_distill_produces_a_complete_usable_skill() {
 }
 
 #[test]
+fn distill_name_chooses_the_skill_name() {
+    // galdr supplies the mechanism; the caller brings the naming intelligence. `--name`
+    // installs under a chosen, memorable name instead of the mechanical galdr-<slug>.
+    let sb = Sandbox::new();
+    let id = sb.record("whatever the recording was called", &[BASH_STATUS]);
+    assert!(
+        sb.run(&["distill", &id, "--name", "rust-greenlight"])
+            .status
+            .success()
+    );
+    let md = sb.skill_md("rust-greenlight");
+    assert!(md.contains("name: rust-greenlight"), "{md}");
+    assert!(
+        !sb.home()
+            .join(".agents/skills/galdr-whatever-the-recording-was-called")
+            .exists(),
+        "the mechanical name must not also be created"
+    );
+    // It still validates and is classified as a galdr skill (origin is content-based,
+    // not the name prefix), so dropping the prefix is safe.
+    assert!(sb.run(&["validate", "rust-greenlight"]).status.success());
+}
+
+#[test]
 fn validate_passes_clean_skills_and_refuses_bad_content() {
     // The gate is reachable from the CLI: a clean distilled skill validates, a file
     // carrying a personal path is refused, and --all --json is machine-readable.

@@ -101,9 +101,12 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 3. Do the task normally. Your tool calls are captured automatically by the PostToolUse
    hook — no extra steps, nothing to narrate.
 4. Stop before writing your final report: `galdr rec stop` (prints the rec_id).
-5. Distill: `galdr distill <rec_id>` → a complete SKILL.md, installed and linked into
-   every installed harness. It must clear the content gate first (secrets, personal
-   paths, and broken skills are refused), so what lands is safe to share. That is it.
+5. Distill: `galdr distill <rec_id> --name <name>` → a complete SKILL.md, installed and
+   linked into every installed harness. It must clear the content gate first (secrets,
+   personal paths, and broken skills are refused), so what lands is safe to share.
+   **You choose the name** — galdr does not guess one. Pick something descriptive,
+   memorable, and original (e.g. `cargo-preflight`, `rust-greenlight`), not a mechanical
+   label. Omit `--name` and galdr falls back to `galdr-<recording-slug>`.
 6. Replay: the new skill is discoverable by name in this harness and every other one
    galdr detected. Invoke it later with new inputs; interpret it, don't replay verbatim.
 
@@ -118,9 +121,10 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 - `galdr rec start <slug>` / `galdr rec stop` — open and close a recording.
 - `galdr list [--json]` — closed recordings.
 - `galdr show <rec_id> [--json]` — a recording's steps.
-- `galdr distill <rec_id>` — render and install a complete skill in one step. Variants:
-  `--draft` writes scaffolding for you to refine then install with `--from <file>`;
-  `--auto` lets a local model write it.
+- `galdr distill <rec_id> [--name <name>]` — render and install a complete skill in one
+  step. `--name` sets the skill name (you bring the naming judgment; galdr does not guess);
+  without it the name is `galdr-<recording-slug>`. Variants: `--draft` writes scaffolding
+  for you to refine then install with `--from <file>`; `--auto` lets a local model write it.
 - `galdr skills [--json]` — installed skills, each marked `galdr` (distilled) or `external`.
 - `galdr link` — re-link galdr skills into every installed harness's skills directory.
 - `galdr harnesses [--json]` — which harnesses are installed and whether galdr is wired in.

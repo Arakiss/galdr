@@ -32,9 +32,15 @@ use crate::{catalog, paths, record, span, validate};
 /// scaffolding for an agent to refine instead. With `from`, install the `SKILL.md`
 /// the agent already prepared. In every case galdr is the only writer of the skills
 /// directory.
-pub fn distill(id: &str, from: Option<&Path>, draft: bool, strict: bool) -> Result<()> {
+pub fn distill(
+    id: &str,
+    from: Option<&Path>,
+    draft: bool,
+    strict: bool,
+    name: Option<&str>,
+) -> Result<()> {
     let recording = load_recording(id)?;
-    let skill_name = format!("galdr-{}", slugify(&recording.name));
+    let skill_name = skill_name_for(name, &recording);
     let skill_dir = paths::skill_dir(&skill_name)?;
 
     if let Some(src) = from {
@@ -124,9 +130,14 @@ fn write_draft(
 /// span. Falls back to the deterministic complete skill if the engine is unselected,
 /// missing, or unreachable, or if its output fails validation — so `--auto` without a
 /// model still installs a usable skill, never a dead-end draft. Always exits cleanly.
-pub fn distill_auto(id: &str, engine_override: Option<&str>, strict: bool) -> Result<()> {
+pub fn distill_auto(
+    id: &str,
+    engine_override: Option<&str>,
+    strict: bool,
+    name: Option<&str>,
+) -> Result<()> {
     let recording = load_recording(id)?;
-    let skill_name = format!("galdr-{}", slugify(&recording.name));
+    let skill_name = skill_name_for(name, &recording);
     let skill_dir = paths::skill_dir(&skill_name)?;
 
     let config = Config::load()?;
@@ -425,6 +436,19 @@ fn extract_frontmatter(skill_md: &str) -> Result<&str> {
         offset += line.len();
     }
     bail!("YAML frontmatter is not closed with a `---` line");
+}
+
+/// The skill's name: the caller's `--name` if given (slugified to a safe, kebab-case
+/// component), else the mechanical `galdr-<recording-slug>`. galdr supplies the
+/// mechanism; the *intelligence* of a memorable, descriptive name is the agent's to
+/// bring through `--name` — galdr deliberately does not guess one. The name is only an
+/// identifier; what an agent matches on is the `description`, which the gate keeps
+/// precise either way.
+fn skill_name_for(name: Option<&str>, recording: &record::Recording) -> String {
+    match name {
+        Some(n) => slugify(n),
+        None => format!("galdr-{}", slugify(&recording.name)),
+    }
 }
 
 /// Loads the metadata of a closed recording.
