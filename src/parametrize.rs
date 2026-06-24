@@ -30,6 +30,7 @@ pub fn parametrize(id_a: &str, id_b: &str, emit: bool) -> Result<()> {
     let content = render_param_skill(&report, &skill_name);
 
     let dir = paths::skill_dir(&skill_name)?;
+    paths::ensure_not_symlinked(&dir)?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("SKILL.md");
     std::fs::write(&path, content)?;

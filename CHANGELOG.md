@@ -74,6 +74,33 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 - The no-daemon catalog fallback now stays current after recording closes, draft writes,
   final skill installs, and parametrized skill emits.
 
+### Security
+
+Pre-release hardening pass (adversarial review: a local multi-agent audit plus an
+independent Codex review; both reviews agreed on the core issues):
+
+- **Sensor DoS** — the hook now caps stdin at 16 MiB, so a hostile/buggy harness can no
+  longer OOM-abort the process before the panic guard runs (the "never break the session"
+  contract).
+- **Private data exposure** — `~/.galdr` (spans hold raw tool data) is locked to `0700`,
+  so another local user cannot read your recordings or catalog. This also closes the
+  daemon socket's bind/chmod race (the socket lives inside the now-0700 root).
+- **Loopback bypass / SSRF** — `validate_loopback` parses the authority before any
+  `/?#`, so `http://evil.com#@127.0.0.1` resolves to `evil.com` and is rejected; the host
+  is matched by `IpAddr::is_loopback()`. The MLX HTTP client now also forbids redirects.
+- **Redaction leak** — `export --redact` scrubs *every* exported file (steps.md,
+  recording.json, …), not just the raw span; a Bash command summary can carry a secret too.
+  The redactor gained more credential classes (JWT, GitLab, npm, Google OAuth, …) and now
+  redacts whole PEM key blocks.
+- **Skill prompt-injection** — untrusted recording names and recorded paths are sanitized
+  (newlines collapsed, backticks neutralized, YAML escaped) before they land in the
+  installed SKILL.md an agent loads; the `--auto` prompt neutralizes attempts to forge its
+  untrusted-data delimiter.
+- **Path traversal** — `galdr link --skill <name>` (and any raw skill name) is validated
+  to a single safe path component, and a pre-existing symlinked skill directory is refused
+  rather than followed.
+- **Daemon hardening** — bounded request size and a read timeout on the control socket.
+
 ### Fixed
 
 - **Distilled skills are now discoverable by the harness they were recorded in.**

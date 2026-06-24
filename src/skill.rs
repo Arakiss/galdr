@@ -44,6 +44,7 @@ fn parse_version(md: &str) -> Option<String> {
 /// skills directory, including for its own skill.
 pub fn install() -> Result<Vec<LinkResult>> {
     let dir = paths::skill_dir(SKILL_NAME)?;
+    paths::ensure_not_symlinked(&dir)?;
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join("SKILL.md"), render())?;
     link::link_skill(SKILL_NAME)

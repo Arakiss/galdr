@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::Notify;
@@ -186,11 +186,18 @@ async fn handle_conn(stream: UnixStream, db: Db, shutdown: Arc<Notify>) {
 }
 
 async fn process_conn(stream: UnixStream, db: Db, shutdown: Arc<Notify>) -> Result<()> {
+    // Bound a request in size and time: a local client (the socket lives in the
+    // 0700 root, so only this user, but still) must not be able to exhaust memory
+    // with an endless line or hold a connection open forever without a newline.
+    const MAX_REQUEST_BYTES: u64 = 1024 * 1024;
+    const READ_TIMEOUT: Duration = Duration::from_secs(10);
     let (read_half, mut write_half) = stream.into_split();
-    let mut reader = BufReader::new(read_half);
+    let mut reader = BufReader::new(read_half.take(MAX_REQUEST_BYTES));
     let mut line = String::new();
-    if reader.read_line(&mut line).await? == 0 {
-        return Ok(());
+    match tokio::time::timeout(READ_TIMEOUT, reader.read_line(&mut line)).await {
+        Ok(Ok(0)) | Err(_) => return Ok(()),
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => return Err(err.into()),
     }
 
     let req: Request = match serde_json::from_str(line.trim()) {

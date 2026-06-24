@@ -352,6 +352,90 @@ fn link_never_clobbers_a_real_skill_already_in_the_harness() {
 }
 
 #[test]
+fn link_rejects_path_traversal_in_skill_name() {
+    // `galdr link --skill ../x` must not escape the skills root to create a symlink
+    // at an arbitrary sibling path.
+    let sb = Sandbox::new();
+    let out = sb.run(&["link", "--skill", "../evil"]);
+    assert!(
+        !out.status.success(),
+        "path-traversal skill name must be rejected"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("path separator") || err.contains("invalid skill name"),
+        "{err}"
+    );
+    // Nothing got created outside the skills dir.
+    assert!(!sb.home().join(".claude/evil").exists());
+}
+
+#[test]
+fn export_redact_scrubs_secrets_from_every_file_not_just_raw() {
+    // The worst redaction bug: --redact scrubbed raw.redacted.jsonl but left the
+    // secret in steps.md (the Bash command summary). It must scrub all files.
+    let sb = Sandbox::new();
+    let id = sb.record(
+        "leaky",
+        &[r#"{"tool_name":"Bash","tool_input":{"command":"curl -H 'Authorization: Bearer ghp_SECRETtoken123' https://api"},"tool_response":{}}"#],
+    );
+    let out = sb.home().join("exp");
+    assert!(
+        sb.cmd()
+            .args(["export", &id, "--out"])
+            .arg(&out)
+            .arg("--redact")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    for file in ["steps.md", "raw.redacted.jsonl"] {
+        let content = std::fs::read_to_string(out.join(file)).unwrap();
+        assert!(
+            !content.contains("ghp_SECRETtoken123"),
+            "{file} still leaks the secret:\n{content}"
+        );
+    }
+    assert!(
+        std::fs::read_to_string(out.join("steps.md"))
+            .unwrap()
+            .contains("[REDACTED]")
+    );
+}
+
+#[test]
+fn galdr_root_is_locked_to_the_owner() {
+    // Spans hold raw tool data; another local user must not be able to read them.
+    let sb = Sandbox::new();
+    sb.record("private", &[BASH_STATUS]);
+    let meta = std::fs::metadata(sb.home().join(".galdr")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        meta.permissions().mode() & 0o077,
+        0,
+        "~/.galdr must be 0700 (no group/other access)"
+    );
+}
+
+#[test]
+fn hook_survives_an_oversized_payload() {
+    // A hostile/huge stdin must not crash the sensor; it caps the read and drops the
+    // (truncated, unparseable) event, still exiting 0.
+    let sb = Sandbox::new();
+    assert!(sb.run(&["rec", "start", "big"]).status.success());
+    let id = sb.active_rec_id();
+    let huge = format!(
+        r#"{{"tool_name":"Bash","tool_input":{{"command":"{}"}},"tool_response":{{}}}}"#,
+        "A".repeat(2_000_000)
+    );
+    let out = sb.hook(&huge, false);
+    assert!(out.status.success(), "the sensor must always exit 0");
+    // A 2 MB payload is under the cap, so it records; the point is it does not crash.
+    assert!(sb.span_lines(&id) <= 1);
+}
+
+#[test]
 fn sensor_never_breaks_the_session() {
     let sb = Sandbox::new();
 
