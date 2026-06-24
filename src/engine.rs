@@ -66,9 +66,19 @@ fn mlx_http_engine(_cfg: &Config) -> Option<Box<dyn DistillEngine>> {
 
 /// Accepts only loopback hosts. The single guard that keeps the distiller from
 /// ever reaching off the machine.
+///
+/// Parsed defensively: the authority ends at the FIRST `/`, `?`, or `#`, so tricks
+/// like `http://evil.com#@127.0.0.1` (where a naive `rsplit('@')` would see the
+/// loopback) resolve to the real host `evil.com` and are rejected. The host is then
+/// matched by `IpAddr::is_loopback()` (covering all of 127.0.0.0/8 and ::1), or the
+/// literal `localhost`.
 pub fn validate_loopback(url: &str) -> Result<()> {
+    use std::net::IpAddr;
+
     let after_scheme = url.split("://").nth(1).unwrap_or(url);
-    let authority = after_scheme.split('/').next().unwrap_or("");
+    // The authority is everything before the first path/query/fragment delimiter.
+    let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    // Userinfo (anything before the last '@') is stripped; the host is what remains.
     let hostport = authority.rsplit('@').next().unwrap_or(authority);
     let host = if let Some(rest) = hostport.strip_prefix('[') {
         // IPv6 literal: [::1]:port
@@ -76,12 +86,16 @@ pub fn validate_loopback(url: &str) -> Result<()> {
     } else {
         hostport.split(':').next().unwrap_or("")
     };
-    match host {
-        "127.0.0.1" | "::1" | "localhost" => Ok(()),
-        other => {
-            bail!("non-loopback host '{other}' is not allowed (the distiller is loopback-only)")
-        }
+
+    if host == "localhost" {
+        return Ok(());
     }
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && ip.is_loopback()
+    {
+        return Ok(());
+    }
+    bail!("non-loopback host '{host}' is not allowed (the distiller is loopback-only)")
 }
 
 /// Engine that shells out to `python3 -m mlx_lm.generate`. No extra crate; needs
@@ -187,6 +201,9 @@ impl DistillEngine for MlxHttpEngine {
     fn detect(&self) -> bool {
         let Ok(client) = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_millis(800))
+            // A loopback endpoint could still 30x-redirect to an off-host address;
+            // forbidding redirects keeps the "no external egress" promise intact.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
         else {
             return false;
@@ -205,6 +222,7 @@ impl DistillEngine for MlxHttpEngine {
 
         let client = reqwest::blocking::Client::builder()
             .timeout(self.timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let body = serde_json::json!({
             "model": self.model,
@@ -255,6 +273,30 @@ mod tests {
         ] {
             assert!(validate_loopback(url).is_err(), "{url} should be rejected");
         }
+    }
+
+    #[test]
+    fn fragment_and_query_userinfo_tricks_are_rejected() {
+        // The authority ends at the first / ? #, so these resolve to the real
+        // off-host host, not the loopback hidden after an @.
+        for url in [
+            "http://evil.com#@127.0.0.1",
+            "http://evil.com?@127.0.0.1",
+            "http://evil.com/@127.0.0.1",
+            "http://127.0.0.1.evil.com:8080",
+            "http://0.0.0.0:8080",
+        ] {
+            assert!(
+                validate_loopback(url).is_err(),
+                "{url} must not be accepted as loopback"
+            );
+        }
+    }
+
+    #[test]
+    fn loopback_range_is_accepted() {
+        // is_loopback() covers all of 127.0.0.0/8, not just 127.0.0.1.
+        assert!(validate_loopback("http://127.0.0.2:8080").is_ok());
     }
 
     #[test]

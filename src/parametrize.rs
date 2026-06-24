@@ -30,10 +30,26 @@ pub fn parametrize(id_a: &str, id_b: &str, emit: bool) -> Result<()> {
     let content = render_param_skill(&report, &skill_name);
 
     let dir = paths::skill_dir(&skill_name)?;
+    paths::ensure_not_symlinked(&dir)?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("SKILL.md");
     std::fs::write(&path, content)?;
     println!("Parametrized skill written to {}", path.display());
+
+    // Make it discoverable in every installed harness, like a distilled skill.
+    if let Ok(results) = crate::link::link_skill(&skill_name) {
+        let reached: Vec<&str> = results
+            .iter()
+            .filter(|r| {
+                r.status != crate::link::LinkStatus::Conflict
+                    && r.status != crate::link::LinkStatus::Failed
+            })
+            .map(|r| r.harness.as_str())
+            .collect();
+        if !reached.is_empty() {
+            println!("Discoverable in: {}", reached.join(", "));
+        }
+    }
 
     let skill_path = path.display().to_string();
     let installed_at = record::now_rfc3339();
@@ -102,7 +118,7 @@ pub fn render_param_skill(report: &DiffReport, skill_name: &str) -> String {
         report.events_b.len()
     );
     let conf = if low { "LOW" } else { "HIGH" };
-    let total = report.events_a.len().max(report.events_b.len());
+    let total = report.events_a.len().max(report.events_b.len()).max(1);
     let _ = writeln!(
         out,
         "- alignment: {conf} confidence, {}/{total} steps matched",
@@ -134,10 +150,10 @@ pub fn render_param_skill(report: &DiffReport, skill_name: &str) -> String {
                 "- `{{{{{}}}}}` — {} `{}` at step {} (e.g. `{}` / `{}`)",
                 param.name,
                 param.tool_name,
-                param.json_path,
+                inline_safe(&param.json_path),
                 param.step,
-                param.value_a,
-                param.value_b
+                inline_safe(&param.value_a),
+                inline_safe(&param.value_b)
             );
         }
     }
@@ -208,10 +224,22 @@ fn templated_step(event: &Event, params: &[&Parameter]) -> (String, Vec<String>)
         if !param.value_a.is_empty() && summary.contains(&param.value_a) {
             summary = summary.replace(&param.value_a, &placeholder);
         } else {
-            notes.push(format!("`{}` → `{placeholder}`", param.json_path));
+            notes.push(format!(
+                "`{}` → `{placeholder}`",
+                inline_safe(&param.json_path)
+            ));
         }
     }
-    (format!("`{summary}`"), notes)
+    // Sanitize last so any inserted `{{NAME}}` placeholders survive untouched.
+    (format!("`{}`", inline_safe(&summary)), notes)
+}
+
+/// Makes a value safe to embed in a backtick-delimited inline code span: a stray
+/// backtick would close the span and a newline would break the markdown list item,
+/// so both are neutralized. Draft skills are read by the agent, so a faithful but
+/// well-formed rendering beats a literal one that corrupts the document.
+fn inline_safe(value: &str) -> String {
+    value.replace('`', "'").replace(['\n', '\r'], " ")
 }
 
 #[cfg(test)]
@@ -265,5 +293,36 @@ mod tests {
 
         assert!(skill.contains("⚠ LOW-CONFIDENCE"));
         assert!(skill.contains("## Alignment notes"));
+    }
+
+    #[test]
+    fn inline_safe_neutralizes_backticks_and_newlines() {
+        assert_eq!(inline_safe("a`b`c"), "a'b'c");
+        assert_eq!(inline_safe("line1\nline2"), "line1 line2");
+        assert_eq!(inline_safe("plain"), "plain");
+    }
+
+    #[test]
+    fn parameter_values_with_backticks_do_not_break_the_markdown() {
+        // A command substitution like `date` in a Bash arg would otherwise close the
+        // inline-code span and corrupt the generated skill.
+        let a = vec![ev(
+            0,
+            "Bash",
+            serde_json::json!({ "command": "echo `date`" }),
+        )];
+        let b = vec![ev(
+            0,
+            "Bash",
+            serde_json::json!({ "command": "echo `whoami`" }),
+        )];
+        let report = analyze("t", &a, "t", &b);
+        let skill = render_param_skill(&report, "galdr-t-param");
+        // The recorded backtick-wrapped substitutions must not survive verbatim —
+        // they would close the inline-code span and corrupt the document.
+        assert!(!skill.contains("`date`"));
+        assert!(!skill.contains("`whoami`"));
+        // They survive as neutralized single-quoted forms instead.
+        assert!(skill.contains("'date'") || skill.contains("'whoami'"));
     }
 }

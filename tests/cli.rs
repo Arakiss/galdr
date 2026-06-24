@@ -131,6 +131,311 @@ const BASH_STATUS: &str =
     r#"{"tool_name":"Bash","tool_input":{"command":"git status"},"tool_response":{}}"#;
 
 #[test]
+fn json_output_is_machine_readable() {
+    // The CLI is the AI-first surface: every --json flag must emit a single,
+    // parseable JSON document an agent can consume without scraping a table.
+    let sb = Sandbox::new();
+    let id = sb.record("json task", &[BASH_STATUS]);
+
+    let refined = sb.home().join("r.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-json-task\ndescription: \"json\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let parse = |args: &[&str]| -> serde_json::Value {
+        let out = sb.run(args);
+        assert!(out.status.success(), "{args:?} failed");
+        serde_json::from_str(&stdout(&out))
+            .unwrap_or_else(|e| panic!("{args:?} did not emit valid JSON: {e}"))
+    };
+
+    // list → array with our recording
+    let list = parse(&["list", "--json"]);
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["rec_id"] == id.as_str())
+    );
+
+    // show → object with steps
+    let show = parse(&["show", &id, "--json"]);
+    assert_eq!(show["recording"]["name"], "json task");
+    assert_eq!(show["steps"].as_array().unwrap().len(), 1);
+
+    // skills → array carrying the origin classification
+    let skills = parse(&["skills", "--json"]);
+    let skill = skills
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["skill_name"] == "galdr-json-task")
+        .expect("the distilled skill is listed");
+    assert_eq!(skill["origin"], "galdr");
+
+    // harnesses → array, always non-empty (the known set)
+    let harnesses = parse(&["harnesses", "--json"]);
+    assert!(!harnesses.as_array().unwrap().is_empty());
+    assert!(
+        harnesses
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["key"] == "claude")
+    );
+
+    // outcome list → object with usage/labels keys
+    assert!(
+        sb.run(&[
+            "outcome",
+            "usage",
+            "--skill",
+            "galdr-json-task",
+            "--rec",
+            &id,
+            "--outcome",
+            "success",
+        ])
+        .status
+        .success()
+    );
+    let outcomes = parse(&["outcome", "list", "--json"]);
+    assert!(outcomes["usage"].is_array());
+    assert!(outcomes["labels"].is_array());
+}
+
+#[test]
+fn default_distill_produces_a_complete_usable_skill() {
+    // The "finished in one" bar: `galdr distill <id>` with no flags must install a
+    // complete, valid skill in the open-standard anatomy — no agent pass, no draft.
+    let sb = Sandbox::new();
+    let id = sb.record(
+        "deploy preview",
+        &[
+            BASH_STATUS,
+            r#"{"tool_name":"Write","tool_input":{"file_path":"/repo/out.txt"},"tool_response":{}}"#,
+        ],
+    );
+    assert!(sb.run(&["distill", &id]).status.success());
+
+    let skill = sb.skill_md("galdr-deploy-preview");
+    for section in ["## When to use", "## Inputs", "## Steps", "## Verification"] {
+        assert!(skill.contains(section), "missing {section}:\n{skill}");
+    }
+    assert!(!skill.contains("[galdr DRAFT]"));
+    assert!(!skill.contains("TODO(agent)"));
+    // It scores as a complete, ready skill — not a draft.
+    let listing = stdout(&sb.run(&["skills"]));
+    assert!(listing.contains("final"));
+    assert!(listing.contains("ready"));
+}
+
+#[test]
+fn setup_codex_check_and_print_work() {
+    let sb = Sandbox::new();
+    let missing = stdout(&sb.run(&["setup", "codex", "--check"]));
+    assert!(missing.contains("not found"));
+
+    let snippet = stdout(&sb.run(&["setup", "codex", "--print"]));
+    assert!(snippet.contains("PostToolUse"));
+    assert!(snippet.contains("galdr hook"));
+
+    let hooks = sb.home().join(".codex/hooks.json");
+    std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
+    std::fs::write(&hooks, snippet).unwrap();
+    let configured = stdout(&sb.run(&["setup", "codex", "--check"]));
+    assert!(configured.contains("is configured"));
+}
+
+#[test]
+fn distilled_skill_is_linked_into_installed_harnesses() {
+    // The make-or-break for "R/R for Claude Code": a distilled skill must become
+    // discoverable in the harness it was recorded in, not dead-end in the open
+    // standard root the harness never reads.
+    let sb = Sandbox::new();
+    // Stand up a Claude Code skills dir so the harness is "installed" and known.
+    std::fs::create_dir_all(sb.home().join(".claude/skills")).unwrap();
+
+    let id = sb.record("link task", &[BASH_STATUS]);
+    let refined = sb.home().join("r.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-link-task\ndescription: \"link\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // The skill is now reachable through the Claude Code skills directory.
+    let linked = sb.home().join(".claude/skills/galdr-link-task/SKILL.md");
+    assert!(
+        linked.exists(),
+        "the distilled skill must be discoverable in ~/.claude/skills"
+    );
+    // And it resolves back to the canonical open-standard copy.
+    let canonical = sb.home().join(".agents/skills/galdr-link-task/SKILL.md");
+    assert!(canonical.exists());
+}
+
+#[test]
+fn link_never_clobbers_a_real_skill_already_in_the_harness() {
+    let sb = Sandbox::new();
+    // A user's own, hand-authored skill of the same name already lives in Claude Code.
+    let existing = sb.home().join(".claude/skills/galdr-keepme");
+    std::fs::create_dir_all(&existing).unwrap();
+    std::fs::write(existing.join("SKILL.md"), "real user content").unwrap();
+
+    let id = sb.record("keepme", &[BASH_STATUS]);
+    let refined = sb.home().join("r.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-keepme\ndescription: \"x\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // The user's real file is untouched (not replaced by a symlink).
+    let content =
+        std::fs::read_to_string(sb.home().join(".claude/skills/galdr-keepme/SKILL.md")).unwrap();
+    assert_eq!(content, "real user content");
+    assert!(
+        !sb.home()
+            .join(".claude/skills/galdr-keepme")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    // `galdr link --json` reports the conflict rather than silently failing.
+    let out = sb.run(&["link", "--skill", "galdr-keepme", "--json"]);
+    let results: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        results
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["harness"] == "Claude Code" && r["status"] == "conflict")
+    );
+}
+
+#[test]
+fn link_rejects_path_traversal_in_skill_name() {
+    // `galdr link --skill ../x` must not escape the skills root to create a symlink
+    // at an arbitrary sibling path.
+    let sb = Sandbox::new();
+    let out = sb.run(&["link", "--skill", "../evil"]);
+    assert!(
+        !out.status.success(),
+        "path-traversal skill name must be rejected"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("path separator") || err.contains("invalid skill name"),
+        "{err}"
+    );
+    // Nothing got created outside the skills dir.
+    assert!(!sb.home().join(".claude/evil").exists());
+}
+
+#[test]
+fn export_redact_scrubs_secrets_from_every_file_not_just_raw() {
+    // The worst redaction bug: --redact scrubbed raw.redacted.jsonl but left the
+    // secret in steps.md (the Bash command summary). It must scrub all files.
+    let sb = Sandbox::new();
+    let id = sb.record(
+        "leaky",
+        &[r#"{"tool_name":"Bash","tool_input":{"command":"curl -H 'Authorization: Bearer ghp_SECRETtoken123' https://api"},"tool_response":{}}"#],
+    );
+    let out = sb.home().join("exp");
+    assert!(
+        sb.cmd()
+            .args(["export", &id, "--out"])
+            .arg(&out)
+            .arg("--redact")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    for file in ["steps.md", "raw.redacted.jsonl"] {
+        let content = std::fs::read_to_string(out.join(file)).unwrap();
+        assert!(
+            !content.contains("ghp_SECRETtoken123"),
+            "{file} still leaks the secret:\n{content}"
+        );
+    }
+    assert!(
+        std::fs::read_to_string(out.join("steps.md"))
+            .unwrap()
+            .contains("[REDACTED]")
+    );
+}
+
+#[test]
+fn galdr_root_is_locked_to_the_owner() {
+    // Spans hold raw tool data; another local user must not be able to read them.
+    let sb = Sandbox::new();
+    sb.record("private", &[BASH_STATUS]);
+    let meta = std::fs::metadata(sb.home().join(".galdr")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        meta.permissions().mode() & 0o077,
+        0,
+        "~/.galdr must be 0700 (no group/other access)"
+    );
+}
+
+#[test]
+fn hook_survives_an_oversized_payload() {
+    // A hostile/huge stdin must not crash the sensor; it caps the read and drops the
+    // (truncated, unparseable) event, still exiting 0.
+    let sb = Sandbox::new();
+    assert!(sb.run(&["rec", "start", "big"]).status.success());
+    let id = sb.active_rec_id();
+    let huge = format!(
+        r#"{{"tool_name":"Bash","tool_input":{{"command":"{}"}},"tool_response":{{}}}}"#,
+        "A".repeat(2_000_000)
+    );
+    let out = sb.hook(&huge, false);
+    assert!(out.status.success(), "the sensor must always exit 0");
+    // A 2 MB payload is under the cap, so it records; the point is it does not crash.
+    assert!(sb.span_lines(&id) <= 1);
+}
+
+#[test]
 fn sensor_never_breaks_the_session() {
     let sb = Sandbox::new();
 
@@ -148,6 +453,58 @@ fn sensor_never_breaks_the_session() {
     let failed = sb.hook(BASH_STATUS, true);
     assert!(failed.status.success(), "the sensor must always exit 0");
     assert_eq!(sb.span_lines(&id), 1, "a failed hook must not append");
+}
+
+#[test]
+fn recording_scopes_to_the_session_that_started_it() {
+    // A single global `active` flag means every concurrent agent session's hook
+    // sees this recording. The sensor must bind to the starting session and refuse
+    // events from another session, so a parallel session in another project cannot
+    // leak its tool calls into this span.
+    let sb = Sandbox::new();
+    assert!(sb.run(&["rec", "start", "scoped"]).status.success());
+    let id = sb.active_rec_id();
+
+    // First event carrying a session id binds the recording (no cwd → binds).
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Bash","tool_input":{"command":"mine-1"},"tool_response":{},"session_id":"mine"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+    // A different session's event, in another directory, must be dropped.
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Bash","tool_input":{"command":"leak"},"tool_response":{},"session_id":"other","cwd":"/elsewhere"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+    // The bound session keeps recording.
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"tool_response":{},"session_id":"mine"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+
+    assert_eq!(
+        sb.span_lines(&id),
+        2,
+        "only the bound session's events record"
+    );
+    let span = std::fs::read_to_string(sb.home().join(".galdr/spans").join(format!("{id}.jsonl")))
+        .unwrap();
+    assert!(
+        !span.contains("leak"),
+        "the foreign session's command must not leak in: {span}"
+    );
+    assert!(!span.contains("\"other\""));
 }
 
 #[test]
@@ -383,18 +740,23 @@ fn parametrize_marks_divergent_recordings_low_confidence() {
 }
 
 #[test]
-fn distill_auto_falls_back_to_the_draft_without_an_engine() {
+fn distill_auto_falls_back_to_a_complete_skill_without_an_engine() {
     let sb = Sandbox::new();
     let id = sb.record("auto demo", &[BASH_STATUS]);
 
-    // No MLX server and no Python mlx_lm: --auto must fall back and exit 0.
+    // No MLX server and no Python mlx_lm: --auto must fall back to a usable, complete
+    // skill (not a dead-end draft) and exit 0.
     let auto = sb.run(&["distill", &id, "--auto"]);
     assert!(
         auto.status.success(),
         "--auto must exit 0 even with no engine"
     );
-    let draft = sb.skill_md("galdr-auto-demo");
-    assert!(draft.contains("galdr-auto-demo"));
+    let skill = sb.skill_md("galdr-auto-demo");
+    assert!(skill.contains("galdr-auto-demo"));
+    // The fallback is complete: the open-standard anatomy, no draft markers.
+    assert!(skill.contains("## When to use"));
+    assert!(skill.contains("## Verification"));
+    assert!(!skill.contains("[galdr DRAFT]"));
 }
 
 #[test]
@@ -463,7 +825,9 @@ fn skills_catalog_reports_status_readiness_and_delta() {
     let sb = Sandbox::new();
     let id = sb.record("readiness", &[BASH_STATUS]);
 
-    assert!(sb.run(&["distill", &id]).status.success());
+    // The agent-assisted scaffolding path still exists behind --draft and scores
+    // lower (draft markers, missing refinement) before an agent finishes it.
+    assert!(sb.run(&["distill", &id, "--draft"]).status.success());
     let draft_listing = stdout(&sb.run(&["skills"]));
     assert!(draft_listing.contains("galdr-readiness"));
     assert!(draft_listing.contains("draft"));

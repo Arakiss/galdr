@@ -17,6 +17,15 @@ pub struct ActiveRec {
     /// Session transcript path; the sensor captures it from the first event.
     #[serde(default)]
     pub transcript_path: Option<String>,
+    /// Directory where `rec start` ran. The sensor only binds the recording to a
+    /// session whose first event happens under this tree, so a concurrent agent
+    /// session in another project cannot leak its tool calls into this span.
+    #[serde(default)]
+    pub origin_cwd: Option<String>,
+    /// The session id this recording locked onto, set by the sensor from the first
+    /// event that matches `origin_cwd`. Once bound, only that session is recorded.
+    #[serde(default)]
+    pub bound_session: Option<String>,
 }
 
 /// Metadata of a closed recording, serialized in
@@ -68,11 +77,16 @@ pub fn start(name: Option<String>) -> Result<()> {
 
     let rec_id = Ulid::new().to_string();
     let name = name.unwrap_or_else(|| "rec".to_string());
+    let origin_cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.display().to_string());
     let active = ActiveRec {
         rec_id: rec_id.clone(),
         name: name.clone(),
         started_at: now_rfc3339(),
         transcript_path: None,
+        origin_cwd,
+        bound_session: None,
     };
     write_active(&active)?;
 
@@ -94,6 +108,9 @@ pub fn start(name: Option<String>) -> Result<()> {
 pub fn stop() -> Result<()> {
     let active = read_active().context("no active recording")?;
     let span_path = paths::span_file(&active.rec_id)?;
+    // Durably persist the span before we declare the recording closed. Best-effort:
+    // a sync failure must not block stopping (the events are already in the file).
+    let _ = span::fsync(&span_path);
     let events = span::read_span(&span_path).unwrap_or_default();
     let steps = events.len();
     let cwd = events.last().and_then(|e| e.cwd.clone());

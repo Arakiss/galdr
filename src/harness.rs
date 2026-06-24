@@ -1,0 +1,176 @@
+//! Detects which agent harnesses are present on this system.
+//!
+//! galdr records the tool calls a harness emits, so knowing *which* harnesses are
+//! installed — and whether galdr's sensor is wired into each — is part of its setup
+//! and diagnostics story. Detection is read-only: it probes well-known config
+//! directories and looks for the harness binary on `PATH`. It never runs them.
+
+use std::path::PathBuf;
+
+use directories::BaseDirs;
+use serde::Serialize;
+
+use crate::setup;
+
+/// One detected (or absent) agent harness.
+#[derive(Debug, Clone, Serialize)]
+pub struct HarnessInfo {
+    /// Display name, e.g. "Claude Code".
+    pub name: String,
+    /// Stable key, e.g. "claude".
+    pub key: String,
+    /// True if a config directory or the binary was found.
+    pub detected: bool,
+    /// The harness config directory, if it exists.
+    pub config_dir: Option<String>,
+    /// Whether the harness binary is on `PATH`.
+    pub on_path: bool,
+    /// Whether galdr's hook is wired into this harness. `Some` only where galdr
+    /// knows how to wire one (today: Claude Code); `None` elsewhere.
+    pub galdr_hook: Option<bool>,
+    /// The directory this harness loads skills from, if galdr knows it and it
+    /// exists. A distilled skill must be reachable here to be usable.
+    pub skills_dir: Option<String>,
+    /// Short human note (e.g. hook status).
+    pub notes: String,
+}
+
+struct Known {
+    name: &'static str,
+    key: &'static str,
+    config: &'static str,
+    bin: &'static str,
+    /// Where this harness loads user skills from, relative to `$HOME`. `None`
+    /// when galdr does not yet know the harness's skills location.
+    skills_subdir: Option<&'static str>,
+}
+
+/// The harnesses galdr knows how to recognize. Ordered by how common they are.
+/// `skills_subdir` is verified against on-disk layout, not assumed.
+const KNOWN: &[Known] = &[
+    Known {
+        name: "Claude Code",
+        key: "claude",
+        config: ".claude",
+        bin: "claude",
+        skills_subdir: Some(".claude/skills"),
+    },
+    Known {
+        name: "Codex",
+        key: "codex",
+        config: ".codex",
+        bin: "codex",
+        skills_subdir: Some(".codex/skills"),
+    },
+    Known {
+        name: "Cursor",
+        key: "cursor",
+        config: ".cursor",
+        bin: "cursor",
+        skills_subdir: Some(".cursor/skills-cursor"),
+    },
+    Known {
+        name: "Gemini CLI",
+        key: "gemini",
+        config: ".gemini",
+        bin: "gemini",
+        skills_subdir: None,
+    },
+    Known {
+        name: "Aider",
+        key: "aider",
+        config: ".aider.conf.yml",
+        bin: "aider",
+        skills_subdir: None,
+    },
+    Known {
+        name: "Windsurf",
+        key: "windsurf",
+        config: ".windsurf",
+        bin: "windsurf",
+        skills_subdir: None,
+    },
+];
+
+/// Probes the system for known harnesses.
+pub fn detect() -> Vec<HarnessInfo> {
+    let home = BaseDirs::new().map(|b| b.home_dir().to_path_buf());
+    KNOWN.iter().map(|k| info_for(k, home.as_ref())).collect()
+}
+
+/// Where a detected harness loads skills from, if galdr knows it. Used to make a
+/// distilled skill discoverable across every installed harness.
+pub fn skills_dir(key: &str) -> Option<PathBuf> {
+    let home = BaseDirs::new()?.home_dir().to_path_buf();
+    let known = KNOWN.iter().find(|k| k.key == key)?;
+    known.skills_subdir.map(|sub| home.join(sub))
+}
+
+fn info_for(k: &Known, home: Option<&PathBuf>) -> HarnessInfo {
+    let config_dir = home
+        .map(|h| h.join(k.config))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string());
+    let on_path = binary_on_path(k.bin);
+    let galdr_hook = match k.key {
+        "claude" => setup::claude_hook_configured(),
+        "codex" => setup::codex_hook_configured(),
+        _ => None,
+    };
+    let skills_dir = home
+        .zip(k.skills_subdir)
+        .map(|(h, sub)| h.join(sub))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string());
+    let detected = config_dir.is_some() || on_path;
+    let notes = match galdr_hook {
+        Some(true) => "galdr sensor wired".to_string(),
+        Some(false) if detected => "galdr sensor not wired".to_string(),
+        _ => String::new(),
+    };
+    HarnessInfo {
+        name: k.name.to_string(),
+        key: k.key.to_string(),
+        detected,
+        config_dir,
+        on_path,
+        galdr_hook,
+        skills_dir,
+        notes,
+    }
+}
+
+/// True if an executable file named `bin` is found in any `PATH` directory.
+fn binary_on_path(bin: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(bin).is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_returns_every_known_harness() {
+        let found = detect();
+        assert_eq!(found.len(), KNOWN.len());
+        assert!(found.iter().any(|h| h.key == "claude"));
+        // galdr can wire a hook into Claude Code and Codex, so their flag may be Some
+        // (depending on whether a settings/hooks file exists); the field is always
+        // well-formed and the entries are present.
+        let _ = found.iter().find(|h| h.key == "claude").unwrap().galdr_hook;
+        let _ = found.iter().find(|h| h.key == "codex").unwrap().galdr_hook;
+        // A harness galdr can't wire (no known hook file) never carries a flag.
+        let cursor = found.iter().find(|h| h.key == "cursor").unwrap();
+        assert!(cursor.galdr_hook.is_none());
+    }
+
+    #[test]
+    fn binary_on_path_finds_a_ubiquitous_binary() {
+        // `sh` exists on every unix PATH the tests run on.
+        assert!(binary_on_path("sh"));
+        assert!(!binary_on_path("definitely-not-a-real-binary-xyzzy"));
+    }
+}

@@ -118,6 +118,16 @@ pub fn record_outcome(input: OutcomeInput) -> Result<SkillOutcomeEvent> {
     Ok(event)
 }
 
+/// Whether a skill is currently installed under the skills root. Used to warn —
+/// not block — when an outcome is recorded against a name that does not exist,
+/// since a typo silently poisons the very training data this lane collects. We
+/// still record it: a skill may have been legitimately uninstalled after use.
+pub fn skill_exists(skill_name: &str) -> bool {
+    paths::skill_dir(skill_name)
+        .map(|dir| dir.join("SKILL.md").exists())
+        .unwrap_or(false)
+}
+
 pub fn read_usage_log(path: &Path) -> Result<Vec<SkillUsageEvent>> {
     read_jsonl(path)
 }
