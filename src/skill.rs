@@ -82,6 +82,9 @@ This skill teaches you how to drive galdr. It ships with galdr and is regenerate
   to capture a recipe for next time.
 - A task is likely to recur: start a recording before you begin, so the run itself
   becomes the skill.
+- The task involves driving a GUI through Computer Use — those clicks, types, and
+  screenshots are tool calls too, so galdr records them (keeping the action, dropping
+  the screenshot) and distills them into a semantic GUI skill.
 
 Do not use for one-off throwaway work, or for secret-heavy sessions unless asked.
 

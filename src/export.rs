@@ -174,10 +174,17 @@ const SECRET_PREFIXES: &[&str] = &[
     "-----BEGIN",  // PEM key block opener (the whole block is also redacted below)
 ];
 
+/// Scrubs secret-shaped tokens from free text, always returning a string (the input
+/// unchanged if nothing matched). Shared with the distiller so a secret typed into a
+/// GUI or pasted into a command never lands in an installed, shareable `SKILL.md`.
+pub(crate) fn redact_text(text: &str) -> String {
+    redact_secrets_in_text(text).unwrap_or_else(|| text.to_string())
+}
+
 /// Replaces any whitespace-delimited token that matches a known secret shape with
 /// `[REDACTED]`, leaving the rest of the string intact so the step stays readable.
 /// Returns `None` when nothing matched (so callers can skip the allocation).
-fn redact_secrets_in_text(text: &str) -> Option<String> {
+pub(crate) fn redact_secrets_in_text(text: &str) -> Option<String> {
     // A PEM block spans multiple lines; redact the whole body, not just the marker.
     if let Some(pem_free) = redact_pem_blocks(text) {
         // Recurse to also catch token-shaped secrets in the remaining text.

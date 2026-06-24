@@ -79,12 +79,49 @@ pub(crate) fn summarize_input(tool_name: &str, input: &serde_json::Value) -> Str
                 .unwrap_or(p)
         }),
         "WebFetch" | "WebSearch" => field("url").or_else(|| field("query")),
+        name if is_computer_use(name) => Some(describe_computer_use(input)),
         _ => None,
     };
 
     let raw = raw.unwrap_or_else(|| describe_unknown(input));
 
     truncate(&raw, 160)
+}
+
+/// True for Claude's Computer Use tool (the built-in `computer-use` MCP server) and
+/// the classic `computer` tool. Matched loosely so a renamed MCP variant still hits.
+pub(crate) fn is_computer_use(tool_name: &str) -> bool {
+    let t = tool_name.to_ascii_lowercase();
+    t == "computer" || t.contains("computer_use") || t.contains("computer-use")
+}
+
+/// Renders a Computer Use action on one line — `click (812,344)`, `type "42.50"`,
+/// `key cmd+s`, `screenshot` — so a recorded GUI session reads like steps the agent
+/// took, not a wall of coordinates and base64. The pixels themselves are never the
+/// reusable signal; the action is.
+fn describe_computer_use(input: &serde_json::Value) -> String {
+    let serde_json::Value::Object(map) = input else {
+        return "computer action".to_string();
+    };
+    let str_field = |k: &str| map.get(k).and_then(|v| v.as_str());
+    let action = str_field("action").unwrap_or("action");
+
+    // Coordinate may be [x, y] or {x, y}.
+    let coord = map.get("coordinate").and_then(|c| match c {
+        serde_json::Value::Array(a) if a.len() == 2 => Some(format!("({},{})", a[0], a[1])),
+        serde_json::Value::Object(o) => match (o.get("x"), o.get("y")) {
+            (Some(x), Some(y)) => Some(format!("({x},{y})")),
+            _ => None,
+        },
+        _ => None,
+    });
+    let text = str_field("text").or_else(|| str_field("key"));
+
+    match (coord, text) {
+        (Some(c), _) => format!("{action} {c}"),
+        (None, Some(t)) => format!("{action} \"{t}\""),
+        (None, None) => action.to_string(),
+    }
 }
 
 /// Summarizes a tool call galdr has no special case for — most importantly the MCP
@@ -139,7 +176,7 @@ fn describe_unknown(input: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{slugify, summarize_input, truncate};
+    use super::{is_computer_use, slugify, summarize_input, truncate};
 
     #[test]
     fn slugify_normalizes_names() {
@@ -190,6 +227,31 @@ mod tests {
         assert_eq!(
             summarize_input("Unknown", &serde_json::json!({ "a": 1, "b": 2 })),
             "fields: a, b"
+        );
+    }
+
+    #[test]
+    fn summarize_renders_computer_use_actions() {
+        assert!(is_computer_use("mcp__computer-use__computer"));
+        assert!(is_computer_use("computer"));
+        assert!(!is_computer_use("Bash"));
+        assert_eq!(
+            summarize_input(
+                "mcp__computer-use__computer",
+                &serde_json::json!({ "action": "left_click", "coordinate": [812, 344] })
+            ),
+            "left_click (812,344)"
+        );
+        assert_eq!(
+            summarize_input(
+                "mcp__computer-use__computer",
+                &serde_json::json!({ "action": "type", "text": "42.50" })
+            ),
+            "type \"42.50\""
+        );
+        assert_eq!(
+            summarize_input("computer", &serde_json::json!({ "action": "screenshot" })),
+            "screenshot"
         );
     }
 

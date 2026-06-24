@@ -37,7 +37,7 @@ pub struct Config {
     pub capture: CaptureConfig,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CaptureConfig {
     /// Tool names that must not be recorded.
@@ -46,6 +46,27 @@ pub struct CaptureConfig {
     pub deny_cwd_prefixes: Vec<String>,
     /// Optional JSON-character cap for recorded tool responses.
     pub max_response_chars: Option<usize>,
+    /// Drop screenshot/base64 image blobs (e.g. Computer Use captures) from the
+    /// recorded event. On by default: a screenshot is a large, sensitive image whose
+    /// reusable signal is the *action*, not the pixels — keeping it bloats the span
+    /// and risks leaking on-screen content. The action fields are always kept.
+    #[serde(default = "default_strip_screenshots")]
+    pub strip_screenshots: bool,
+}
+
+fn default_strip_screenshots() -> bool {
+    true
+}
+
+impl Default for CaptureConfig {
+    fn default() -> Self {
+        Self {
+            deny_tools: Vec::new(),
+            deny_cwd_prefixes: Vec::new(),
+            max_response_chars: None,
+            strip_screenshots: true,
+        }
+    }
 }
 
 impl Default for Config {
