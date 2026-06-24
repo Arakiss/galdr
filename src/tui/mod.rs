@@ -33,6 +33,8 @@ pub fn run() -> Result<()> {
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App<FsCatalog>) -> Result<()> {
     while !app.should_quit {
+        // Cheap re-read of the active flag so the title's REC badge stays live.
+        app.refresh_active();
         terminal.draw(|frame| screens::render(frame, app))?;
         // A timeout keeps the loop responsive to resizes even with no key input.
         if event::poll(Duration::from_millis(250))?

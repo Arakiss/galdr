@@ -10,6 +10,18 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 
 ### Added
 
+- **Finished in one.** `galdr distill <id>` (no flags) now renders a *complete*, valid
+  skill straight from the span — in the open-standard anatomy (`When to use` / `Inputs`
+  / `Steps` / `Verification`, the same shape Codex Record & Replay uses) — and installs
+  it, no agent pass required. `--draft` keeps the agent-assisted scaffolding for a higher
+  ceiling; `--auto` (local MLX) now falls back to this complete skill instead of a draft.
+- `galdr setup codex` (`--check` / `--print`) wires galdr's sensor into Codex's
+  `~/.codex/hooks.json`, which shares Claude Code's hook shape. `galdr harnesses` now
+  reports the Codex sensor status alongside Claude Code's.
+- `galdr setup skill` installs galdr's *own* skill — a `SKILL.md` that teaches an agent
+  how to drive galdr (record → distill → replay) — into every installed harness. The
+  skill is embedded in the binary and version-stamped, so it never drifts from the CLI;
+  `galdr doctor` flags a stale or missing one. galdr dogfooding its own thesis.
 - Skill catalog readiness signals: `galdr skills` now reports lifecycle status,
   readiness score, score delta, provenance, and review notes for installed skills.
 - Skill evaluation history: the catalog now keeps evaluator outputs in
@@ -25,13 +37,73 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
   default; `--include-raw` and `--redact` are explicit raw-export paths.
 - Optional capture policy in `~/.galdr/config.json` for future recordings
   (`deny_tools`, `deny_cwd_prefixes`, `max_response_chars`).
+- `GALDR_ROOT` and `GALDR_SKILLS_ROOT` environment overrides relocate the data and
+  skills roots, enabling hermetic tests, throwaway profiles, and CI without hijacking
+  `$HOME`. They also provide an escape hatch from the Unix-socket path-length limit.
+- TUI: a substring filter (`/`) over recordings and skills, first/last (`g`/`G`) and
+  page (PgUp/PgDn) navigation, a scrollable raw-payload overlay, and a live `● REC`
+  indicator in the title while a recording is active.
+- TUI redesign: a tabbed layout (Overview / Recordings / Skills / Harnesses) with a
+  number-key and tab-key switcher. The Overview is a dashboard — stat cards, a system
+  harness panel, and recent activity. A dedicated Skills tab separates galdr-distilled
+  skills from external ones and color-codes readiness; a Harnesses tab shows which
+  agent harnesses are installed and whether galdr's sensor is wired into each.
+- `galdr harnesses` (with `--json`) detects the agent harnesses installed on the
+  system (Claude Code, Codex, Cursor, Gemini CLI, Aider, Windsurf) by config dir and
+  `PATH`, and reports whether galdr's hook is wired in.
+- `galdr skills` now labels each skill `galdr` or `external` and lists galdr-distilled
+  skills first, so your own distilled skills are not buried among other harnesses'.
+- `--json` on every read command (`list`, `show`, `skills`, `evaluations`,
+  `harnesses`, `outcome list`): the CLI is the AI-first surface, so an agent consumes
+  galdr's state as structured data instead of scraping a human table.
 
 ### Changed
 
 - Final `galdr distill <rec_id> --from <file>` installs now validate the refined skill
-  has frontmatter, required sections, and no draft markers.
+  has frontmatter, required sections, and no draft markers. The frontmatter check is
+  structural — it requires a closing `---` and the keys inside the block, not just the
+  substrings anywhere in the file.
+- `galdr export --redact` now also redacts secret-shaped tokens embedded in string
+  values (API keys pasted into a command or URL), not only values under a sensitive key.
+- Re-distilling over an existing skill warns before overwriting, loudly when the existing
+  `SKILL.md` was already a finished (refined) skill rather than a draft.
+- A closed recording is `fsync`'d to disk on `galdr rec stop`, so it is durable without
+  paying an `fsync` on the sensor's hot path (which stays instantaneous).
+- The skill readiness delta is computed inside a transaction, so a concurrent writer can
+  no longer make it stale.
 - The no-daemon catalog fallback now stays current after recording closes, draft writes,
   final skill installs, and parametrized skill emits.
+
+### Fixed
+
+- **Distilled skills are now discoverable by the harness they were recorded in.**
+  galdr installs a skill in the open-standard root (`~/.agents/skills`), but each
+  harness loads from its own directory — Claude Code from `~/.claude/skills`, Codex
+  from `~/.codex/skills`, Cursor from `~/.cursor/skills-cursor`. A skill that only
+  lived in the open-standard root was invisible to the harness, so galdr recorded and
+  distilled and then dead-ended at a file nothing loaded. Installing a skill now
+  symlinks it into every detected harness's skills directory (never clobbering a real
+  file of the same name), `galdr link` repairs discoverability in bulk (galdr-distilled
+  skills only by default; `--all` syncs the whole open-standard root), and
+  `galdr doctor` reports any galdr skill an installed harness can't see.
+- Recordings are now scoped to the session that started them. A single global
+  `active` flag meant every concurrent agent session's hook wrote into the active
+  recording, so a parallel session in another project leaked its tool calls — and
+  their payloads — into the span. The sensor now binds the recording to the first
+  session whose event lands under the directory where `rec start` ran, and records
+  only that session; `rec status` shows the `origin_cwd` and the `bound_session`.
+- `galdr doctor` and `galdr setup claude --check` recognize a `galdr hook` invocation
+  wrapped in a shell conditional (the resilient PATH-with-cargo-bin-fallback form),
+  instead of reporting a correctly-wired hook as missing.
+- `galdr daemon --detach` verifies the daemon actually answered on the control socket
+  before reporting success, and fails fast with an actionable message when the socket
+  path would exceed the platform's `SUN_LEN` limit.
+- `galdr outcome usage|label` warns when the target skill is not installed, instead of
+  silently recording it with a null skill hash and poisoning the supervised-data lane.
+- Parametrized skills no longer corrupt their Markdown when a recorded value contains a
+  backtick or a newline.
+- The diff and parametrize "steps matched" line no longer shows `0/0` for empty recordings.
+- `galdr distill --auto` raw-payload truncation no longer overshoots the configured budget.
 
 ## [0.2.0] - 2026-06-19
 

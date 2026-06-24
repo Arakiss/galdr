@@ -41,6 +41,12 @@ rules:
       - engine
       - config
       - cli
+      - setup
+      - harness
+      - link
+      - skill
+      - outcome
+      - export
       - docs
       - ci
       - deps

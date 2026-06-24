@@ -26,6 +26,16 @@ pub fn dim() -> Style {
     Style::new().fg(DIM)
 }
 
+/// Primary foreground for normal text (the terminal's default ink).
+pub fn text() -> Style {
+    Style::new().fg(Color::Rgb(238, 236, 246))
+}
+
+/// Table-header style: mono-feeling, dim, uppercase handled by the caller.
+pub fn header() -> Style {
+    Style::new().fg(DIM).add_modifier(Modifier::BOLD)
+}
+
 pub fn warn() -> Style {
     Style::new().fg(WARN).add_modifier(Modifier::BOLD)
 }

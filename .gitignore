@@ -7,6 +7,9 @@ Cargo.lock.bak
 *.sqlite-wal
 *.sqlite-shm
 
+# local-only HTML artifacts (status hubs, audits, reports — never published)
+/html-artifacts/
+
 # editor / OS
 .DS_Store
 .idea/
