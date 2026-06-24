@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail};
 
-use crate::{catalog, config, ipc, paths, record, setup};
+use crate::{catalog, config, ipc, paths, record, setup, validate};
 
 pub fn run() -> Result<()> {
     let mut issues = Vec::new();
@@ -58,6 +58,7 @@ pub fn run() -> Result<()> {
                 println!("warn {draft_count} skill(s) are still drafts");
             }
             report_discoverability(&skills);
+            report_validation(&skills);
         }
         Err(err) => {
             println!("err  catalog rebuild check failed: {err:#}");
@@ -142,6 +143,49 @@ fn report_discoverability(skills: &[catalog::SkillRow]) {
             galdr_skills.len(),
             harnesses.len()
         );
+    }
+}
+
+/// Runs the content gate over galdr's own installed skills and warns about any that
+/// would fail it (e.g. a skill distilled before the gate existed). Scoped to
+/// galdr-distilled skills: the shared root also holds hand-authored skills with their
+/// own structure, which galdr neither wrote nor judges here (`galdr validate --all`
+/// audits those on demand). A warning, not an error: the fix is the operator's, and a
+/// pre-existing skill must not break `doctor`.
+fn report_validation(skills: &[catalog::SkillRow]) {
+    let galdr: Vec<&catalog::SkillRow> = skills
+        .iter()
+        .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+        .collect();
+    if galdr.is_empty() {
+        return;
+    }
+    let mut failing = Vec::new();
+    for skill in &galdr {
+        let Ok(md) = std::fs::read_to_string(&skill.skill_path) else {
+            continue;
+        };
+        let draft = matches!(
+            skill.status.as_str(),
+            catalog::STATUS_DRAFT | catalog::STATUS_PARAM_DRAFT
+        );
+        let ctx = validate::ValidationCtx::new(draft, false);
+        if validate::validate_skill(&md, &ctx).has_blocking(false) {
+            failing.push(skill.skill_name.clone());
+        }
+    }
+    if failing.is_empty() {
+        println!(
+            "ok   {} galdr skill(s) pass the validation gate",
+            galdr.len()
+        );
+    } else {
+        println!(
+            "warn {} galdr skill(s) would fail the validation gate: {}",
+            failing.len(),
+            failing.join(", ")
+        );
+        println!("     fix or re-distill them; run `galdr validate <skill>` for the findings");
     }
 }
 

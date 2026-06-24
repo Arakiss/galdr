@@ -26,8 +26,9 @@ mod skill;
 mod span;
 mod summary;
 mod tui;
+mod validate;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -74,6 +75,15 @@ enum Commands {
         /// Engine for `--auto`: mlx-http, mlx-subprocess, or agent.
         #[arg(long, value_name = "ENGINE", requires = "auto")]
         engine: Option<String>,
+        /// Name the skill (slugified) instead of the mechanical `galdr-<slug>`.
+        /// galdr supplies the mechanism; choosing a memorable, descriptive name is
+        /// the caller's job — galdr does not guess one.
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Refuse to install unless the skill is impeccable: optimization and
+        /// documented-danger warnings also block, not just hard errors.
+        #[arg(long)]
+        strict: bool,
     },
 
     /// List closed recordings.
@@ -156,6 +166,29 @@ enum Commands {
         /// Export a redacted raw copy instead of the original raw payloads.
         #[arg(long)]
         redact: bool,
+    },
+
+    /// Validate installed skills (or a file) against the content gate.
+    ///
+    /// The same gate every `galdr distill` runs before installing: security (secrets,
+    /// personal paths, dangerous commands), practicality (a real, complete skill), and
+    /// optimization (a precise description, no recording noise). Exits non-zero if any
+    /// blocking finding is present.
+    Validate {
+        /// Name of one installed skill to validate (default: galdr-distilled skills).
+        skill: Option<String>,
+        /// Validate every skill in the open-standard root, not just galdr's.
+        #[arg(long, conflicts_with = "file")]
+        all: bool,
+        /// Validate an arbitrary SKILL.md file instead of an installed skill.
+        #[arg(long, value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// Treat optimization and documented-danger warnings as blocking too.
+        #[arg(long)]
+        strict: bool,
+        /// Emit machine-readable JSON instead of a report.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Diagnose local galdr installation, catalog, config, and hook wiring.
@@ -337,11 +370,24 @@ fn main() {
             draft,
             auto,
             engine,
+            name,
+            strict,
         } => {
             if auto {
-                exit_on_error(distill::distill_auto(&id, engine.as_deref()))
+                exit_on_error(distill::distill_auto(
+                    &id,
+                    engine.as_deref(),
+                    strict,
+                    name.as_deref(),
+                ))
             } else {
-                exit_on_error(distill::distill(&id, from.as_deref(), draft))
+                exit_on_error(distill::distill(
+                    &id,
+                    from.as_deref(),
+                    draft,
+                    strict,
+                    name.as_deref(),
+                ))
             }
         }
         Commands::List { json } => exit_on_error(cmd_list(json)),
@@ -360,6 +406,19 @@ fn main() {
             include_raw,
             redact,
         } => exit_on_error(export::export_recording(&id, &out, include_raw, redact)),
+        Commands::Validate {
+            skill,
+            all,
+            file,
+            strict,
+            json,
+        } => exit_on_error(cmd_validate(
+            skill.as_deref(),
+            all,
+            file.as_deref(),
+            strict,
+            json,
+        )),
         Commands::Doctor => exit_on_error(doctor::run()),
         Commands::Setup { target } => match target {
             SetupTarget::Claude { check, print } => {
@@ -690,6 +749,157 @@ fn warn_if_skill_missing(skill_name: &str) {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|_| "the skills root".to_string())
         );
+    }
+}
+
+/// A skill (or file) to run through the content gate, with the markdown to check.
+struct ValidationTarget {
+    label: String,
+    md: String,
+    draft: bool,
+}
+
+fn cmd_validate(
+    skill: Option<&str>,
+    all: bool,
+    file: Option<&Path>,
+    strict: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    let mut targets: Vec<ValidationTarget> = Vec::new();
+    if let Some(path) = file {
+        let md = std::fs::read_to_string(path)
+            .with_context(|| format!("could not read {}", path.display()))?;
+        // A standalone file is judged as a finished skill (drafts are an installed
+        // status, not a property of an arbitrary file).
+        targets.push(ValidationTarget {
+            label: path.display().to_string(),
+            md,
+            draft: false,
+        });
+    } else {
+        let skills = from_db(catalog::list_skills).unwrap_or_default();
+        let selected: Vec<catalog::SkillRow> = skills
+            .into_iter()
+            .filter(|s| match skill {
+                Some(name) => s.skill_name == name,
+                None if all => true,
+                None => s.origin == catalog::ORIGIN_GALDR,
+            })
+            .collect();
+        for s in selected {
+            let Ok(md) = std::fs::read_to_string(&s.skill_path) else {
+                continue;
+            };
+            let draft = matches!(
+                s.status.as_str(),
+                catalog::STATUS_DRAFT | catalog::STATUS_PARAM_DRAFT
+            );
+            targets.push(ValidationTarget {
+                label: s.skill_name,
+                md,
+                draft,
+            });
+        }
+    }
+
+    if targets.is_empty() {
+        if json {
+            return print_json(&serde_json::json!([]));
+        }
+        match skill {
+            Some(name) => println!("skill '{name}' is not installed or could not be read"),
+            None => {
+                println!("(no skills to validate — distill one first with `galdr distill <id>`)")
+            }
+        }
+        return Ok(());
+    }
+
+    let mut any_blocking = false;
+    let mut json_items = Vec::new();
+    for target in &targets {
+        let ctx = validate::ValidationCtx::new(target.draft, strict);
+        let report = validate::validate_skill(&target.md, &ctx);
+        let blocking = report.has_blocking(strict);
+        any_blocking |= blocking;
+
+        if json {
+            json_items.push(validation_target_json(target, &report, blocking));
+        } else {
+            print_validation_report(target, &report, blocking, strict);
+        }
+    }
+
+    if json {
+        print_json(&serde_json::Value::Array(json_items))?;
+    }
+    if any_blocking {
+        anyhow::bail!("validation found blocking issue(s)");
+    }
+    Ok(())
+}
+
+fn validation_target_json(
+    target: &ValidationTarget,
+    report: &validate::ValidationReport,
+    blocking: bool,
+) -> serde_json::Value {
+    let findings: Vec<serde_json::Value> = report
+        .findings
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "severity": severity_str(f.severity),
+                "category": category_str(f.category),
+                "code": f.code,
+                "message": f.message,
+                "line": f.line,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "skill": target.label,
+        "draft": target.draft,
+        "blocking": blocking,
+        "errors": report.errors(),
+        "warnings": report.warnings(),
+        "findings": findings,
+    })
+}
+
+fn print_validation_report(
+    target: &ValidationTarget,
+    report: &validate::ValidationReport,
+    blocking: bool,
+    strict: bool,
+) {
+    let verdict = if blocking {
+        "BLOCKED"
+    } else if report.is_empty() {
+        "clean"
+    } else {
+        "ok (warnings)"
+    };
+    let strict_note = if strict { " [strict]" } else { "" };
+    println!("{} — {verdict}{strict_note}", target.label);
+    print!("{report}");
+}
+
+fn severity_str(severity: validate::Severity) -> &'static str {
+    match severity {
+        validate::Severity::Error => "error",
+        validate::Severity::Warn => "warn",
+    }
+}
+
+fn category_str(category: validate::Category) -> &'static str {
+    match category {
+        validate::Category::Security => "security",
+        validate::Category::Optimization => "optimization",
+        validate::Category::Practicality => "practicality",
     }
 }
 

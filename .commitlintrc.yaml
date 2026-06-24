@@ -38,6 +38,7 @@ rules:
       - diff
       - parametrize
       - distill
+      - validate
       - engine
       - config
       - cli

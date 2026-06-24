@@ -380,7 +380,7 @@ impl<C: Catalog> App<C> {
             return;
         };
         let id = rec.rec_id.clone();
-        match distill::distill(&id, None, false) {
+        match distill::distill(&id, None, false, false, None) {
             Ok(()) => {
                 self.status =
                     format!("distilled {id} into a skill — now discoverable in your harnesses");

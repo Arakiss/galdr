@@ -1051,7 +1051,7 @@ fn analyze_skill_file(skill_path: &str, rec_id: Option<&str>) -> SkillReadiness 
             notes: "skill file unreadable".to_string(),
             confidence: 0.2,
             rationale: serde_json::json!({
-                "metric": "readiness_lint_v1",
+                "metric": "readiness_lint_v2",
                 "error": "skill file unreadable"
             }),
         };
@@ -1088,6 +1088,19 @@ fn analyze_skill_md(md: &str, rec_id: Option<&str>) -> SkillReadiness {
         score -= 10;
         notes.push("missing provenance");
     }
+    // Optimization signals, sharing the gate's rubric (`readiness_lint_v2`): a
+    // description that just restates the name, and steps that are recording noise
+    // rather than the task itself. Both warn; neither is fatal to readiness.
+    let tautological_description = crate::validate::is_tautological_description(md);
+    if tautological_description {
+        score -= 10;
+        notes.push("tautological description");
+    }
+    let noise_steps = crate::validate::noise_step_count(md);
+    if noise_steps > 0 {
+        score -= 5;
+        notes.push("recording-noise steps");
+    }
 
     SkillReadiness {
         score: score.max(0),
@@ -1098,7 +1111,7 @@ fn analyze_skill_md(md: &str, rec_id: Option<&str>) -> SkillReadiness {
         },
         confidence: 0.95,
         rationale: serde_json::json!({
-            "metric": "readiness_lint_v1",
+            "metric": "readiness_lint_v2",
             "frontmatter": {
                 "name": has_name,
                 "description": has_description
@@ -1107,7 +1120,9 @@ fn analyze_skill_md(md: &str, rec_id: Option<&str>) -> SkillReadiness {
                 "missing": missing_sections
             },
             "draft_markers_present": draft_markers_present,
-            "provenance_present": provenance_present
+            "provenance_present": provenance_present,
+            "tautological_description": tautological_description,
+            "noise_steps": noise_steps
         }),
     }
 }
