@@ -75,22 +75,39 @@ pub fn link_skill(skill_name: &str) -> Result<Vec<LinkResult>> {
     Ok(results)
 }
 
-/// Re-links every galdr-installed skill into every detected harness. Used by
-/// `galdr link` to repair discoverability in bulk.
-pub fn link_all() -> Result<Vec<LinkResult>> {
+/// Re-links skills in the open-standard root into every detected harness. With
+/// `all = false` (the default for `galdr link`) only galdr-distilled skills are
+/// linked — galdr's job is its own R/R skills, not fanning the user's hand-authored
+/// skills across harnesses. With `all = true` every skill in the root is linked, for
+/// those who deliberately want galdr to sync the whole open-standard directory.
+pub fn link_all(all: bool) -> Result<Vec<LinkResult>> {
     let root = paths::skills_root()?;
     let mut results = Vec::new();
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Ok(results);
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        // Only galdr-installed skills (those with a SKILL.md); skip stray files.
-        if path.join("SKILL.md").exists()
-            && let Some(name) = path.file_name().and_then(|n| n.to_str())
-        {
-            results.extend(link_skill(name)?);
-        }
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let skill_md = path.join("SKILL.md");
+            if !skill_md.exists() {
+                return None;
+            }
+            if !all
+                && crate::catalog::skill_origin(&skill_md.to_string_lossy())
+                    != crate::catalog::ORIGIN_GALDR
+            {
+                return None;
+            }
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+        })
+        .collect();
+    names.sort();
+    for name in names {
+        results.extend(link_skill(&name)?);
     }
     Ok(results)
 }

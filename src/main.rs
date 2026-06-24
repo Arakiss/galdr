@@ -108,9 +108,13 @@ enum Commands {
     /// each detected harness's skills directory (Claude Code, Codex, Cursor) so the
     /// harness it was recorded in can actually load it.
     Link {
-        /// Link only this skill (default: every galdr-installed skill).
+        /// Link only this skill (default: every galdr-distilled skill).
         #[arg(long)]
         skill: Option<String>,
+        /// Link every skill in the open-standard root, not just galdr-distilled
+        /// ones — sync the whole directory across harnesses.
+        #[arg(long)]
+        all: bool,
         /// Emit machine-readable JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -320,7 +324,7 @@ fn main() {
         Commands::Show { id, json } => exit_on_error(cmd_show(&id, json)),
         Commands::Skills { json } => exit_on_error(cmd_skills(json)),
         Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
-        Commands::Link { skill, json } => exit_on_error(cmd_link(skill.as_deref(), json)),
+        Commands::Link { skill, all, json } => exit_on_error(cmd_link(skill.as_deref(), all, json)),
         Commands::Evaluations { skill, json } => {
             exit_on_error(cmd_evaluations(skill.as_deref(), json))
         }
@@ -499,10 +503,10 @@ fn cmd_harnesses(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_link(skill: Option<&str>, json: bool) -> anyhow::Result<()> {
+fn cmd_link(skill: Option<&str>, all: bool, json: bool) -> anyhow::Result<()> {
     let results = match skill {
         Some(name) => link::link_skill(name)?,
-        None => link::link_all()?,
+        None => link::link_all(all)?,
     };
     if json {
         return print_json(&results);

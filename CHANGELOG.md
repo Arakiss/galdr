@@ -71,7 +71,8 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
   lived in the open-standard root was invisible to the harness, so galdr recorded and
   distilled and then dead-ended at a file nothing loaded. Installing a skill now
   symlinks it into every detected harness's skills directory (never clobbering a real
-  file of the same name), `galdr link` repairs discoverability in bulk, and
+  file of the same name), `galdr link` repairs discoverability in bulk (galdr-distilled
+  skills only by default; `--all` syncs the whole open-standard root), and
   `galdr doctor` reports any galdr skill an installed harness can't see.
 - Recordings are now scoped to the session that started them. A single global
   `active` flag meant every concurrent agent session's hook wrote into the active
