@@ -312,6 +312,8 @@ jobs:
           else
             echo "UPLOAD_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
           fi
+      - name: Prepare SBOM output directory
+        run: mkdir -p dist
       - name: Generate CycloneDX SBOM
         uses: anchore/sbom-action@v0
         with:
