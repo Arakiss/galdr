@@ -31,6 +31,16 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 - TUI: a substring filter (`/`) over recordings and skills, first/last (`g`/`G`) and
   page (PgUp/PgDn) navigation, a scrollable raw-payload overlay, and a live `● REC`
   indicator in the title while a recording is active.
+- TUI redesign: a tabbed layout (Overview / Recordings / Skills / Harnesses) with a
+  number-key and tab-key switcher. The Overview is a dashboard — stat cards, a system
+  harness panel, and recent activity. A dedicated Skills tab separates galdr-distilled
+  skills from external ones and color-codes readiness; a Harnesses tab shows which
+  agent harnesses are installed and whether galdr's sensor is wired into each.
+- `galdr harnesses` (with `--json`) detects the agent harnesses installed on the
+  system (Claude Code, Codex, Cursor, Gemini CLI, Aider, Windsurf) by config dir and
+  `PATH`, and reports whether galdr's hook is wired in.
+- `galdr skills` now labels each skill `galdr` or `external` and lists galdr-distilled
+  skills first, so your own distilled skills are not buried among other harnesses'.
 
 ### Changed
 

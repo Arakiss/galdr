@@ -82,7 +82,9 @@ galdr daemon --detach        # run the supervisor daemon (catalog indexer + sock
 galdr daemon status          # check whether the daemon is answering
 galdr daemon stop            # ask the daemon to shut down gracefully
 galdr show <rec_id>          # inspect one recording with its steps
-galdr skills                 # list installed skills, provenance, status, and readiness metrics
+galdr skills                 # list installed skills, galdr/external origin, provenance, and readiness
+galdr harnesses              # detect agent harnesses on this system and whether galdr's sensor is wired
+galdr harnesses --json       # the same, machine-readable
 galdr evaluations            # list skill evaluator outputs from the catalog
 galdr evaluations --skill <name>   # show one skill's evaluator history
 galdr outcome usage --skill <name> --rec <rec_id> --outcome success
