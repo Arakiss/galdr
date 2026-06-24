@@ -22,6 +22,7 @@ mod parametrize;
 mod paths;
 mod record;
 mod setup;
+mod skill;
 mod span;
 mod summary;
 mod tui;
@@ -239,6 +240,16 @@ enum SetupTarget {
         #[arg(long)]
         print: bool,
     },
+    /// Install galdr's own skill so every harness knows how to drive galdr.
+    ///
+    /// The skill is embedded in the binary and version-stamped, so it never drifts
+    /// from the CLI. Installs into the open-standard root and links it into every
+    /// detected harness. `--print` writes it to stdout instead.
+    Skill {
+        /// Print the skill to stdout instead of installing it.
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -365,6 +376,13 @@ fn main() {
                 }
                 if check || !print {
                     exit_on_error(setup::codex_check());
+                }
+            }
+            SetupTarget::Skill { print } => {
+                if print {
+                    print!("{}", skill::render());
+                } else {
+                    exit_on_error(cmd_setup_skill());
                 }
             }
         },
@@ -552,6 +570,31 @@ fn cmd_link(skill: Option<&str>, all: bool, json: bool) -> anyhow::Result<()> {
             r.status.as_str(),
             r.link_path
         );
+    }
+    Ok(())
+}
+
+fn cmd_setup_skill() -> anyhow::Result<()> {
+    let results = skill::install()?;
+    let reached: Vec<&str> = results
+        .iter()
+        .filter(|r| {
+            !matches!(
+                r.status,
+                link::LinkStatus::Conflict | link::LinkStatus::Failed
+            )
+        })
+        .map(|r| r.harness.as_str())
+        .collect();
+    println!(
+        "galdr skill installed (version {}).",
+        env!("CARGO_PKG_VERSION")
+    );
+    if reached.is_empty() {
+        println!("No harness with a known skills directory is installed yet.");
+    } else {
+        println!("Discoverable in: {}", reached.join(", "));
+        println!("Your agent now knows how to record → distill → replay with galdr.");
     }
     Ok(())
 }

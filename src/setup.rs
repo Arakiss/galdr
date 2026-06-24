@@ -135,9 +135,7 @@ mod tests {
     #[test]
     fn recognizes_path_qualified_galdr_hook_commands() {
         assert!(is_galdr_hook_command("galdr hook"));
-        assert!(is_galdr_hook_command(
-            "/Users/dolores/.cargo/bin/galdr hook"
-        ));
+        assert!(is_galdr_hook_command("/home/user/.cargo/bin/galdr hook"));
         assert!(is_galdr_hook_command(
             "if command -v galdr >/dev/null 2>&1; then galdr hook; elif [ -x \"$HOME/.cargo/bin/galdr\" ]; then \"$HOME/.cargo/bin/galdr\" hook; fi"
         ));

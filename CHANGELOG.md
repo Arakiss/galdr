@@ -18,6 +18,10 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 - `galdr setup codex` (`--check` / `--print`) wires galdr's sensor into Codex's
   `~/.codex/hooks.json`, which shares Claude Code's hook shape. `galdr harnesses` now
   reports the Codex sensor status alongside Claude Code's.
+- `galdr setup skill` installs galdr's *own* skill — a `SKILL.md` that teaches an agent
+  how to drive galdr (record → distill → replay) — into every installed harness. The
+  skill is embedded in the binary and version-stamped, so it never drifts from the CLI;
+  `galdr doctor` flags a stale or missing one. galdr dogfooding its own thesis.
 - Skill catalog readiness signals: `galdr skills` now reports lifecycle status,
   readiness score, score delta, provenance, and review notes for installed skills.
 - Skill evaluation history: the catalog now keeps evaluator outputs in

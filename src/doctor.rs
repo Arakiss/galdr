@@ -65,6 +65,19 @@ pub fn run() -> Result<()> {
         }
     }
 
+    match crate::skill::installed_version() {
+        Some(v) if crate::skill::is_current() => {
+            println!("ok   galdr skill installed and current (version {v})")
+        }
+        Some(v) => println!(
+            "warn galdr skill is stale (installed {v}, binary {}); run `galdr setup skill`",
+            env!("CARGO_PKG_VERSION")
+        ),
+        None => println!(
+            "warn galdr skill not installed; run `galdr setup skill` so your agent can drive galdr"
+        ),
+    }
+
     match setup::claude_hook_configured() {
         Some(true) => println!("ok   Claude Code PostToolUse hook is configured"),
         Some(false) => {

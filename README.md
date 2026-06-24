@@ -74,6 +74,7 @@ agent session ──(PostToolUse)──▶ galdr hook ──append──▶ span
 
 ```sh
 cargo install --path .
+galdr setup skill         # teach your harness(es) how to drive galdr (one time)
 
 galdr rec start demo      # start recording
 #  ... do the task with your agent (a few tool calls) ...
