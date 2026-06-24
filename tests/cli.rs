@@ -436,6 +436,62 @@ fn hook_survives_an_oversized_payload() {
 }
 
 #[test]
+fn computer_use_screenshots_are_dropped_but_actions_recorded() {
+    // galdr captures an agent's Computer Use as tool calls, but the screenshot (a big
+    // base64 image, possibly sensitive) is dropped from the span — only the action stays.
+    let sb = Sandbox::new();
+    assert!(sb.run(&["rec", "start", "gui task"]).status.success());
+    let id = sb.active_rec_id();
+    let blob = "iVBORw0KGgoAAAANSUhEUg".repeat(80);
+    let shot = format!(
+        r#"{{"tool_name":"mcp__computer-use__computer","tool_input":{{"action":"screenshot"}},"tool_response":{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{blob}"}}}},"session_id":"s1"}}"#
+    );
+    assert!(sb.hook(&shot, false).status.success());
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"mcp__computer-use__computer","tool_input":{"action":"type","text":"42.50"},"tool_response":{},"session_id":"s1"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+    assert!(sb.run(&["rec", "stop"]).status.success());
+
+    let span = std::fs::read_to_string(sb.home().join(".galdr/spans").join(format!("{id}.jsonl")))
+        .unwrap();
+    assert!(
+        !span.contains("iVBORw0KGgo"),
+        "the screenshot base64 must be dropped"
+    );
+    assert!(span.contains("stripped screenshot"));
+
+    // The actions read cleanly in `show`.
+    let show = stdout(&sb.run(&["show", &id]));
+    assert!(show.contains("screenshot"));
+    assert!(show.contains("type \"42.50\""), "got: {show}");
+}
+
+#[test]
+fn a_typed_secret_is_redacted_from_the_distilled_skill() {
+    // A Computer Use `type` of a token must not be promoted into the installed,
+    // shareable SKILL.md (Inputs or Steps).
+    let sb = Sandbox::new();
+    let id = sb.record(
+        "login flow",
+        &[
+            r#"{"tool_name":"mcp__computer-use__computer","tool_input":{"action":"type","text":"ghp_SUPERSECRETtoken123"},"tool_response":{}}"#,
+        ],
+    );
+    assert!(sb.run(&["distill", &id]).status.success());
+    let skill = sb.skill_md("galdr-login-flow");
+    assert!(
+        !skill.contains("ghp_SUPERSECRETtoken123"),
+        "secret leaked into skill:\n{skill}"
+    );
+    assert!(skill.contains("[REDACTED]"));
+}
+
+#[test]
 fn sensor_never_breaks_the_session() {
     let sb = Sandbox::new();
 

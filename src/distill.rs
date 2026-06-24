@@ -390,6 +390,9 @@ fn load_recording(id: &str) -> Result<record::Recording> {
 /// Without this, a recording named with a `\n## Ignore previous instructions` could
 /// become a prompt-injection payload the harness reads as part of the skill.
 fn one_line(text: &str, max: usize) -> String {
+    // Redact secret-shaped tokens first: a typed password or pasted API key must not
+    // land in an installed, shareable SKILL.md (e.g. Computer Use `type` text).
+    let text = crate::export::redact_text(text);
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let collapsed = collapsed.replace('`', "'");
     if collapsed.chars().count() > max {
@@ -485,7 +488,10 @@ fn render_complete_skill(
         let _ = writeln!(out, "_(the recording captured no steps)_");
     } else {
         for event in events {
-            let summary = summarize_input(&event.tool_name, &event.tool_input);
+            // Redact secret-shaped tokens from the step summary too (a typed password
+            // shows in the action summary, not only in Inputs).
+            let summary =
+                crate::export::redact_text(&summarize_input(&event.tool_name, &event.tool_input));
             let _ = writeln!(
                 out,
                 "{}. **{}** — {}",
@@ -557,6 +563,15 @@ fn notable_inputs(events: &[Event]) -> Vec<NotableInput> {
             "WebFetch" | "WebSearch" => field(event, "url")
                 .or_else(|| field(event, "query"))
                 .map(|v| (v, format!("web target at step {step}"))),
+            // Computer Use: the text *typed* into the GUI is what varies between runs
+            // — surface it as a candidate input, not coordinates or keystrokes.
+            name if crate::summary::is_computer_use(name)
+                && field(event, "action").as_deref() == Some("type") =>
+            {
+                field(event, "text")
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|v| (v, format!("text typed at step {step}")))
+            }
             _ => None,
         };
         if let Some((value, role)) = candidate
@@ -651,7 +666,10 @@ fn render_skill(
         let _ = writeln!(out, "_(the recording captured no steps)_");
     } else {
         for event in events {
-            let summary = summarize_input(&event.tool_name, &event.tool_input);
+            // Redact secret-shaped tokens from the step summary too (a typed password
+            // shows in the action summary, not only in Inputs).
+            let summary =
+                crate::export::redact_text(&summarize_input(&event.tool_name, &event.tool_input));
             let _ = writeln!(
                 out,
                 "{}. **{}** — {}",
