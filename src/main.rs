@@ -13,6 +13,7 @@ mod doctor;
 mod engine;
 mod export;
 mod ext;
+mod harness;
 mod hook;
 mod ipc;
 mod outcome;
@@ -81,6 +82,13 @@ enum Commands {
 
     /// List installed skills and their provenance.
     Skills,
+
+    /// Detect the agent harnesses installed on this system.
+    Harnesses {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// List skill evaluator outputs from the catalog.
     Evaluations {
@@ -279,6 +287,7 @@ fn main() {
         Commands::List => exit_on_error(cmd_list()),
         Commands::Show { id } => exit_on_error(cmd_show(&id)),
         Commands::Skills => exit_on_error(cmd_skills()),
+        Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
         Commands::Evaluations { skill } => exit_on_error(cmd_evaluations(skill.as_deref())),
         Commands::Outcome { action } => exit_on_error(cmd_outcome(action)),
         Commands::Tui => exit_on_error(tui::run()),
@@ -411,6 +420,36 @@ fn cmd_skills() -> anyhow::Result<()> {
         from_db(catalog::list_skills).unwrap_or_default()
     };
     print_skills(&skills);
+    Ok(())
+}
+
+fn cmd_harnesses(json: bool) -> anyhow::Result<()> {
+    let harnesses = harness::detect();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&harnesses)?);
+        return Ok(());
+    }
+    println!("Agent harnesses on this system:");
+    for h in &harnesses {
+        let mark = if h.detected { "✓" } else { " " };
+        let state = if h.detected { "detected" } else { "absent" };
+        let mut detail = Vec::new();
+        if let Some(cfg) = &h.config_dir {
+            detail.push(cfg.clone());
+        }
+        if h.on_path {
+            detail.push("on PATH".to_string());
+        }
+        if !h.notes.is_empty() {
+            detail.push(h.notes.clone());
+        }
+        let detail = if detail.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", detail.join(" · "))
+        };
+        println!("{mark} {:<13} {state}{detail}", h.name);
+    }
     Ok(())
 }
 
@@ -576,7 +615,25 @@ fn print_skills(skills: &[catalog::SkillRow]) {
         println!("(no skills distilled yet — use `galdr distill <id>`)");
         return;
     }
-    for skill in skills {
+    // galdr-distilled skills first, then external ones (other harnesses / hand-authored).
+    let mut sorted: Vec<&catalog::SkillRow> = skills.iter().collect();
+    sorted.sort_by(|a, b| {
+        let a_external = a.origin != catalog::ORIGIN_GALDR;
+        let b_external = b.origin != catalog::ORIGIN_GALDR;
+        a_external
+            .cmp(&b_external)
+            .then_with(|| a.skill_name.cmp(&b.skill_name))
+    });
+    let galdr_count = sorted
+        .iter()
+        .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+        .count();
+    for skill in sorted {
+        let origin = if skill.origin == catalog::ORIGIN_GALDR {
+            "galdr "
+        } else {
+            "extern"
+        };
         let delta = match skill.readiness_delta.cmp(&0) {
             std::cmp::Ordering::Greater => format!("+{}", skill.readiness_delta),
             std::cmp::Ordering::Less => skill.readiness_delta.to_string(),
@@ -588,8 +645,9 @@ fn print_skills(skills: &[catalog::SkillRow]) {
             None => "← (no provenance)".to_string(),
         };
         println!(
-            "{:<28}  {:<11}  readiness {:>3} ({:>3})  {:<36}  {}",
+            "{:<28}  {:<6}  {:<11}  readiness {:>3} ({:>3})  {:<36}  {}",
             skill.skill_name,
+            origin,
             skill.status,
             skill.readiness_score,
             delta,
@@ -597,6 +655,11 @@ fn print_skills(skills: &[catalog::SkillRow]) {
             skill.readiness_notes
         );
     }
+    println!(
+        "\n{} galdr · {} external",
+        galdr_count,
+        skills.len() - galdr_count
+    );
 }
 
 fn print_evaluations(evaluations: &[catalog::SkillEvaluationRow]) {

@@ -38,13 +38,39 @@ pub(crate) fn truncate(text: &str, max: usize) -> String {
     }
 }
 
+/// Drops leading `cd <dir> &&` / `cd <dir>;` / `cd <dir>\n` segments from a shell
+/// command so the summary shows the meaningful command, not the boilerplate the
+/// harness prepends. A bare `cd <dir>` with nothing after it is kept as-is.
+fn strip_leading_cd(command: &str) -> String {
+    let mut cmd = command.trim();
+    while let Some(after_cd) = cmd.strip_prefix("cd ") {
+        let nl = after_cd.find('\n');
+        let semi = after_cd.find(';');
+        let amp = after_cd.find("&&");
+        let Some(pos) = [nl, semi, amp].into_iter().flatten().min() else {
+            break; // just `cd <dir>` — nothing meaningful follows, keep it
+        };
+        let sep_len = if after_cd[pos..].starts_with("&&") {
+            2
+        } else {
+            1
+        };
+        let next = after_cd[pos + sep_len..].trim_start();
+        if next.is_empty() {
+            break;
+        }
+        cmd = next;
+    }
+    cmd.to_string()
+}
+
 /// Summarizes a tool call's input on one line, according to the tool. This is the
 /// summary stored in the catalog and shown in every list: never the raw blob.
 pub(crate) fn summarize_input(tool_name: &str, input: &serde_json::Value) -> String {
     let field = |key: &str| input.get(key).and_then(|v| v.as_str()).map(str::to_string);
 
     let raw = match tool_name {
-        "Bash" => field("command"),
+        "Bash" => field("command").map(|c| strip_leading_cd(&c)),
         "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => field("file_path"),
         "Glob" => field("pattern"),
         "Grep" => field("pattern").map(|p| {
@@ -83,6 +109,29 @@ mod tests {
     fn truncate_collapses_and_caps() {
         assert_eq!(truncate("a b  c", 80), "a b c");
         assert!(truncate(&"x".repeat(200), 10).ends_with('…'));
+    }
+
+    #[test]
+    fn summarize_strips_leading_cd_boilerplate() {
+        assert_eq!(
+            summarize_input(
+                "Bash",
+                &serde_json::json!({ "command": "cd /a/b/c\ngit log --oneline" })
+            ),
+            "git log --oneline"
+        );
+        assert_eq!(
+            summarize_input(
+                "Bash",
+                &serde_json::json!({ "command": "cd /x && cd /y && cargo test" })
+            ),
+            "cargo test"
+        );
+        // A bare cd is meaningful on its own — keep it.
+        assert_eq!(
+            summarize_input("Bash", &serde_json::json!({ "command": "cd /only" })),
+            "cd /only"
+        );
     }
 
     #[test]
