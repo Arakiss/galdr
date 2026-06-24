@@ -204,22 +204,25 @@ fn denied_by_capture_policy(event: &span::Event, capture: &config::CaptureConfig
     false
 }
 
-/// Recursively replaces base64 image data with a small marker, in place. Targets the
-/// standard image content block (`{"type":"image","source":{"data":"…"}}`), any
-/// `data` field holding a long base64 string, and any very long base64-looking
-/// string anywhere — which is what a Computer Use screenshot looks like. The action
-/// fields (`action`, `coordinate`, `text`, …) are untouched.
+/// Recursively replaces base64 image data with a small marker, in place. It strips
+/// **only with image context** — never generic base64 — so it can't silently corrupt
+/// an arbitrary tool's payload (spans are append-only; a wrong strip is irreversible).
+/// Image context means: an `image` content block (`type: image`, or a `media_type` /
+/// `mimeType` of `image/*`), an image-ish key (`image`, `image_url`, `screenshot`),
+/// or a `data:image/…;base64,…` data URI. The standard Computer Use screenshot —
+/// `{"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}`
+/// — is caught; the action fields (`action`, `coordinate`, `text`) are untouched.
 fn strip_screenshots(value: &mut serde_json::Value) {
-    const DATA_MIN: usize = 1024; // a `data` field this long is a blob, not content
-    const ANY_MIN: usize = 100_000; // any string this long is certainly a blob
     match value {
         serde_json::Value::Object(map) => {
+            let image_ctx = is_image_context(map);
             for (key, v) in map.iter_mut() {
-                let is_blob = v.as_str().is_some_and(|s| {
-                    (key == "data" && s.len() >= DATA_MIN && looks_base64(s))
-                        || (s.len() >= ANY_MIN && looks_base64(s))
-                });
-                if is_blob {
+                let strip = match v.as_str() {
+                    Some(s) if is_data_uri_image(s) => true,
+                    Some(s) if (image_ctx || is_image_key(key)) && is_base64ish(s) => true,
+                    _ => false,
+                };
+                if strip {
                     let bytes = v.as_str().map(str::len).unwrap_or(0);
                     *v = serde_json::json!(format!("[galdr stripped screenshot: {bytes} bytes]"));
                 } else {
@@ -236,15 +239,38 @@ fn strip_screenshots(value: &mut serde_json::Value) {
     }
 }
 
-/// A cheap base64 check: the string is non-trivial and made (almost) entirely of the
-/// base64 alphabet. Good enough to tell an image blob from prose without decoding.
-fn looks_base64(s: &str) -> bool {
+/// Whether this object is (or directly describes) an image content block.
+fn is_image_context(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let s = |k: &str| map.get(k).and_then(|v| v.as_str());
+    s("type") == Some("image")
+        || ["media_type", "mimeType", "mime_type"]
+            .iter()
+            .any(|k| s(k).is_some_and(|m| m.starts_with("image/")))
+}
+
+fn is_image_key(key: &str) -> bool {
+    matches!(
+        key,
+        "image" | "image_url" | "imageUrl" | "screenshot" | "img"
+    )
+}
+
+fn is_data_uri_image(s: &str) -> bool {
+    s.starts_with("data:image/")
+}
+
+/// A cheap base64 check (base64 and base64url), long enough to be a real image, not a
+/// short token. Only consulted once image context is already established.
+fn is_base64ish(s: &str) -> bool {
     if s.len() < 64 {
         return false;
     }
     let ok = s
         .bytes()
-        .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'\n' | b'\r'))
+        .filter(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'+' | b'/' | b'=' | b'-' | b'_' | b'\n' | b'\r')
+        })
         .count();
     ok as f64 / s.len() as f64 > 0.95
 }
@@ -299,6 +325,32 @@ mod tests {
         let before = v.clone();
         strip_screenshots(&mut v);
         assert_eq!(v, before);
+    }
+
+    #[test]
+    fn strip_only_acts_with_image_context_not_generic_base64() {
+        let blob = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU2Nzg5".repeat(50);
+        // No image context: a large base64-looking value under `stdout` is PRESERVED
+        // (stripping it would be irreversible data loss for an arbitrary tool).
+        let mut generic = serde_json::json!({ "stdout": blob });
+        let before = generic.clone();
+        strip_screenshots(&mut generic);
+        assert_eq!(generic, before, "generic base64 must not be stripped");
+
+        // A data: image URI is stripped regardless of context.
+        let mut uri = serde_json::json!({ "url": format!("data:image/png;base64,{blob}") });
+        strip_screenshots(&mut uri);
+        assert!(uri["url"].as_str().unwrap().contains("stripped screenshot"));
+
+        // An image-ish key with base64url payload is stripped.
+        let mut keyed = serde_json::json!({ "image": blob.replace('+', "-") });
+        strip_screenshots(&mut keyed);
+        assert!(
+            keyed["image"]
+                .as_str()
+                .unwrap()
+                .contains("stripped screenshot")
+        );
     }
 
     fn active(origin: Option<&str>, bound: Option<&str>) -> ActiveRec {

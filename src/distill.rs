@@ -390,6 +390,9 @@ fn load_recording(id: &str) -> Result<record::Recording> {
 /// Without this, a recording named with a `\n## Ignore previous instructions` could
 /// become a prompt-injection payload the harness reads as part of the skill.
 fn one_line(text: &str, max: usize) -> String {
+    // Redact secret-shaped tokens first: a typed password or pasted API key must not
+    // land in an installed, shareable SKILL.md (e.g. Computer Use `type` text).
+    let text = crate::export::redact_text(text);
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let collapsed = collapsed.replace('`', "'");
     if collapsed.chars().count() > max {
@@ -485,7 +488,10 @@ fn render_complete_skill(
         let _ = writeln!(out, "_(the recording captured no steps)_");
     } else {
         for event in events {
-            let summary = summarize_input(&event.tool_name, &event.tool_input);
+            // Redact secret-shaped tokens from the step summary too (a typed password
+            // shows in the action summary, not only in Inputs).
+            let summary =
+                crate::export::redact_text(&summarize_input(&event.tool_name, &event.tool_input));
             let _ = writeln!(
                 out,
                 "{}. **{}** — {}",
@@ -660,7 +666,10 @@ fn render_skill(
         let _ = writeln!(out, "_(the recording captured no steps)_");
     } else {
         for event in events {
-            let summary = summarize_input(&event.tool_name, &event.tool_input);
+            // Redact secret-shaped tokens from the step summary too (a typed password
+            // shows in the action summary, not only in Inputs).
+            let summary =
+                crate::export::redact_text(&summarize_input(&event.tool_name, &event.tool_input));
             let _ = writeln!(
                 out,
                 "{}. **{}** — {}",
