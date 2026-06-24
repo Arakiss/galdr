@@ -10,6 +10,14 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 
 ### Added
 
+- **Finished in one.** `galdr distill <id>` (no flags) now renders a *complete*, valid
+  skill straight from the span — in the open-standard anatomy (`When to use` / `Inputs`
+  / `Steps` / `Verification`, the same shape Codex Record & Replay uses) — and installs
+  it, no agent pass required. `--draft` keeps the agent-assisted scaffolding for a higher
+  ceiling; `--auto` (local MLX) now falls back to this complete skill instead of a draft.
+- `galdr setup codex` (`--check` / `--print`) wires galdr's sensor into Codex's
+  `~/.codex/hooks.json`, which shares Claude Code's hook shape. `galdr harnesses` now
+  reports the Codex sensor status alongside Claude Code's.
 - Skill catalog readiness signals: `galdr skills` now reports lifecycle status,
   readiness score, score delta, provenance, and review notes for installed skills.
 - Skill evaluation history: the catalog now keeps evaluator outputs in

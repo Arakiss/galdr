@@ -38,6 +38,13 @@ moves. An agent already emits a clean, structured trace of *what it did*: each t
 call, its input, and its result. galdr records that substrate. The replay is not a
 pixel re-enactment — it is a skill the agent reads and applies with judgment.
 
+**The honest scope.** galdr records what *your agent* did, not what *you* did by hand
+outside it. It does not capture human GUI gestures (clicks in a browser you drive
+manually) — that is a deliberate boundary, not an oversight (a roadmap item below).
+The half galdr does cover — "the agent already did this task well once; crystallize
+it into a reusable skill" — is the one that fits a coding harness, and arguably the
+more useful one. Sold honestly: this is Record & Replay *for what your agent does*.
+
 ## How it works
 
 ```
@@ -54,10 +61,11 @@ agent session ──(PostToolUse)──▶ galdr hook ──append──▶ span
    **always exits 0**: it never breaks the session, even if it fails internally.
 2. **Recording** (`galdr rec start` / `stop`) — opens and closes the span, and writes
    the recording metadata.
-3. **Distillation** (`galdr distill <id>`) — normalizes the span and emits a `SKILL.md`
-   draft with instructions for the agent to complete by reading the raw span. The
-   agent writes the refined skill to a working file; galdr installs it (galdr is the
-   only writer of the skills directory).
+3. **Distillation** (`galdr distill <id>`) — renders a **complete, usable** `SKILL.md`
+   straight from the span, in the open-standard anatomy (`When to use` / `Inputs` /
+   `Steps` / `Verification`), installs it, and links it into every installed harness.
+   Finished in one, no agent pass required. For a higher ceiling, `--draft` emits
+   scaffolding an agent refines, and `--auto` lets a local model write it.
 
 ## Quickstart
 
@@ -70,9 +78,11 @@ galdr rec stop            # close the recording, prints the rec_id
 
 galdr list                # list recordings
 galdr rec status          # inspect the active recording, if any
-galdr distill <rec_id>    # generate the skill draft
-#  ... the agent reads the span and writes the refined skill to a temp file ...
-galdr distill <rec_id> --from <temp-file>   # install the final skill
+galdr distill <rec_id>    # → a complete, discoverable skill, in one step
+
+# Optional, higher ceiling:
+galdr distill <rec_id> --draft              # scaffolding an agent refines, then…
+galdr distill <rec_id> --from <temp-file>   # …install the agent's refined skill
 ```
 
 ## More commands
@@ -96,6 +106,8 @@ galdr reindex                # rebuild the SQLite catalog from disk
 galdr doctor                 # diagnose config, catalog, daemon, skills, and hook wiring
 galdr setup claude --check   # check Claude Code PostToolUse hook wiring
 galdr setup claude --print   # print the safe settings.json snippet
+galdr setup codex --check    # check Codex PostToolUse hook wiring (~/.codex/hooks.json)
+galdr setup codex --print    # print the safe Codex hooks snippet
 galdr tui                    # browse recordings, inspect spans, audit skills
 
 galdr diff <a> <b>           # diff two recordings: constants vs parameters
@@ -304,11 +316,30 @@ Phase 1 (shipped, built on the Phase 0 loop):
 - ✅ **Safe export path** that omits raw payloads by default and can emit redacted raw
   copies without touching the original span.
 
+Phase 2 (shipped):
+
+- ✅ **Finished in one** — `galdr distill` renders a complete, valid skill from the
+  span (open-standard `When to use` / `Inputs` / `Steps` / `Verification` anatomy) and
+  installs it, no agent pass required. `--draft` and `--auto` remain for a higher ceiling.
+- ✅ **Multi-harness discoverability** — a distilled skill is linked into every installed
+  harness's skills directory (Claude Code, Codex, Cursor); `galdr link` / `doctor` manage it.
+- ✅ **Multi-harness sensor** — `galdr setup codex` wires the same hook into Codex's
+  `hooks.json`; `galdr harnesses` shows which harnesses are wired.
+- ✅ **Session-scoped recording** — a recording binds to the session that started it, so a
+  concurrent session in another project can't leak its tool calls into the span.
+- ✅ **AI-first CLI** — `--json` on every read command.
+
 Next:
 
-- Opt-in capture of human GUI gestures.
-- A multi-agent broker (Codex / Cursor) over the same span model.
-- Real gates and real provenance plugged into the extension layer.
+- **Capture of human GUI gestures** — the deliberate scope gap above. Recording what you
+  do by hand (not just what the agent did) needs a browser/desktop capture layer on top of
+  the span model; it is the one axis where Codex's pixel recorder does something galdr does not.
+- Verify the Codex sensor end to end with a live Codex recording (the wiring is in place;
+  the stdin payload is not yet confirmed field-for-field).
+- A multi-agent broker over the same span model.
+- Real gates and real provenance plugged into the extension layer (`PermissionGate`,
+  `ProvenanceSink`) — where harness-specific policy or memory integrations live, kept out
+  of the local-first core.
 
 ## Contributing
 
