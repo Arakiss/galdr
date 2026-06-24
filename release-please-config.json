@@ -4,8 +4,8 @@
   "include-component-in-tag": false,
   "include-v-in-tag": true,
   "separate-pull-requests": false,
-  "pull-request-title-pattern": "chore(release): release ${component} ${version}",
-  "group-pull-request-title-pattern": "chore(release): release ${component} ${version}",
+  "pull-request-title-pattern": "chore${scope}: release ${component} ${version}",
+  "group-pull-request-title-pattern": "chore${scope}: release ${component} ${version}",
   "bootstrap-sha": "c1a0b45cc8bdc960b358f47936d8ce9f12f84191",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
