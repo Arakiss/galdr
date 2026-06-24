@@ -244,6 +244,45 @@ fn default_distill_produces_a_complete_usable_skill() {
 }
 
 #[test]
+fn validate_passes_clean_skills_and_refuses_bad_content() {
+    // The gate is reachable from the CLI: a clean distilled skill validates, a file
+    // carrying a personal path is refused, and --all --json is machine-readable.
+    let sb = Sandbox::new();
+    let id = sb.record("validate demo", &[BASH_STATUS]);
+    assert!(sb.run(&["distill", &id]).status.success());
+
+    let ok = sb.run(&["validate", "galdr-validate-demo"]);
+    assert!(
+        ok.status.success(),
+        "a clean distilled skill must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+
+    let all = sb.run(&["validate", "--all", "--json"]);
+    assert!(all.status.success());
+    let parsed: serde_json::Value = serde_json::from_str(&stdout(&all)).unwrap();
+    assert!(parsed.is_array(), "--json emits an array: {}", stdout(&all));
+
+    // A file with a personal path is a hard security failure (exit non-zero).
+    let bad = sb.home().join("bad.md");
+    std::fs::write(
+        &bad,
+        "---\nname: galdr-bad\ndescription: \"x\"\n---\n\n## When to use\n\nx\n\n## Steps\n\n1. **Read** — /Users/alice/secret.txt\n\n## Verification\n\ny\n",
+    )
+    .unwrap();
+    let refused = sb
+        .cmd()
+        .args(["validate", "--file"])
+        .arg(&bad)
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "a personal path must fail the gate"
+    );
+}
+
+#[test]
 fn setup_codex_check_and_print_work() {
     let sb = Sandbox::new();
     let missing = stdout(&sb.run(&["setup", "codex", "--check"]));

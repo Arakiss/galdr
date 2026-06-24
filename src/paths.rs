@@ -32,6 +32,13 @@ fn home() -> Result<PathBuf> {
     Ok(base.home_dir().to_path_buf())
 }
 
+/// The user's home directory, or `None` if it cannot be determined. Used by the
+/// validation gate to generalize a recorded absolute path (`/Users/<n>/…`) back to
+/// `~/…` so a personal path never lands in an installed, shareable `SKILL.md`.
+pub fn home_dir() -> Option<PathBuf> {
+    home().ok()
+}
+
 /// Reads a directory override from the environment, ignoring an empty value so an
 /// accidental `GALDR_ROOT=` never points the root at the filesystem root.
 fn env_dir(var: &str) -> Option<PathBuf> {

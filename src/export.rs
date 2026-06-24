@@ -227,6 +227,13 @@ fn looks_like_secret(token: &str) -> bool {
         .any(|prefix| token.starts_with(prefix))
 }
 
+/// Reports whether `text` carries a secret-shaped token or PEM block, without
+/// altering it. Shared with the validation gate, which must *flag* a leaked secret
+/// (and refuse to install) rather than silently redact it the way an export does.
+pub(crate) fn contains_secret(text: &str) -> bool {
+    redact_secrets_in_text(text).is_some()
+}
+
 /// Replaces the entire body of any PEM block (`-----BEGIN … -----END …-----`) with
 /// a single `[REDACTED]`, so a private key is never disclosed past its first line.
 /// Returns `None` if no block is present.

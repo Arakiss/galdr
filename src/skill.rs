@@ -43,10 +43,16 @@ fn parse_version(md: &str) -> Option<String> {
 /// installed harness. Returns the link results. `galdr` is the only writer of the
 /// skills directory, including for its own skill.
 pub fn install() -> Result<Vec<LinkResult>> {
+    let content = render();
+    // galdr holds its own skill to the same content gate every distilled skill must
+    // pass. The embedded skill ships clean, so this is a cheap belt-and-suspenders that
+    // catches a regression (a secret, a personal path) before it can be installed.
+    let ctx = crate::validate::ValidationCtx::new(false, false);
+    crate::distill::gate_or_bail(&content, &ctx)?;
     let dir = paths::skill_dir(SKILL_NAME)?;
     paths::ensure_not_symlinked(&dir)?;
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("SKILL.md"), render())?;
+    std::fs::write(dir.join("SKILL.md"), content)?;
     link::link_skill(SKILL_NAME)
 }
 
@@ -96,7 +102,8 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
    hook — no extra steps, nothing to narrate.
 4. Stop before writing your final report: `galdr rec stop` (prints the rec_id).
 5. Distill: `galdr distill <rec_id>` → a complete SKILL.md, installed and linked into
-   every installed harness. That is it — the skill is usable now.
+   every installed harness. It must clear the content gate first (secrets, personal
+   paths, and broken skills are refused), so what lands is safe to share. That is it.
 6. Replay: the new skill is discoverable by name in this harness and every other one
    galdr detected. Invoke it later with new inputs; interpret it, don't replay verbatim.
 
@@ -120,7 +127,13 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 - `galdr outcome usage --skill <name> --rec <rec_id> --outcome success|partial|failed` —
   after you later USE a distilled skill, record how it went. This is the training signal
   that tells galdr which skills are worth keeping; record it honestly.
+- `galdr validate [<skill> | --all | --file <path>] [--strict] [--json]` — run the
+  install-time content gate over a skill (or a file): security (secrets, personal/PII
+  paths, dangerous commands), practicality (a real, complete skill), and optimization
+  (a precise description, no recording noise). Exits non-zero if anything blocks. Add
+  `--strict` to also treat warnings (documented dangers, a weak description) as blocking.
 - `galdr doctor` — diagnose config, catalog, sensor wiring, and skill discoverability.
+  It also flags any installed skill that would fail the content gate.
 
 ## Steps (the recipe, generalized)
 
@@ -144,6 +157,9 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 - Stop the recording before your final summary, so the report's own tool calls are not recorded.
 - The sensor never breaks your session: if galdr fails internally it exits cleanly and records nothing.
 - Everything is local. The raw recording lives only under `~/.galdr`; nothing leaves the machine.
+- Every install passes a content gate: a leaked secret, a personal path, or a skill that
+  is not really a skill is refused, so what you distill is safe to share. Check any skill
+  with `galdr validate`.
 - If a distilled skill is not showing up in a harness, run `galdr link`, then `galdr doctor`.
 
 <!-- galdr-skill-version: {{VERSION}} -->
@@ -175,6 +191,20 @@ mod tests {
         ] {
             assert!(md.contains(cmd), "skill should document `{cmd}`");
         }
+    }
+
+    #[test]
+    fn self_skill_passes_gate() {
+        // galdr's own skill must clear the same content gate it imposes on every
+        // distilled skill — and clear it impeccably (no warnings, strict-clean).
+        let md = render();
+        let ctx = crate::validate::ValidationCtx::new(false, false);
+        let report = crate::validate::validate_skill(&md, &ctx);
+        assert!(!report.has_blocking(false), "{report}");
+        assert!(
+            !report.has_blocking(true),
+            "self-skill should be strict-clean:\n{report}"
+        );
     }
 
     #[test]
