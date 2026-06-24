@@ -328,7 +328,7 @@ pub fn render_report(report: &DiffReport) -> String {
         Confidence::High => "HIGH",
         Confidence::Low => "LOW",
     };
-    let total = report.events_a.len().max(report.events_b.len());
+    let total = report.events_a.len().max(report.events_b.len()).max(1);
     let _ = writeln!(
         out,
         "confidence: {conf}   ({}/{total} steps matched)",

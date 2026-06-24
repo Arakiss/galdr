@@ -38,6 +38,16 @@ moves. An agent already emits a clean, structured trace of *what it did*: each t
 call, its input, and its result. galdr records that substrate. The replay is not a
 pixel re-enactment — it is a skill the agent reads and applies with judgment.
 
+**The honest scope.** galdr records what *your agent* did, not what *you* did by hand
+outside it. Note this is narrower than it sounds: when the agent drives a browser
+through a tool — a Playwright/Chrome MCP server, a browser tool — those clicks, types,
+and navigations **are** tool calls, so galdr already captures and distills them like
+any other step. The only thing out of scope is capturing a *human's* manual gestures
+in a browser the agent never touched; that would need a separate pixel/DOM capture
+layer and contradicts the "tool calls, not pixels" thesis, so it stays out of the core
+(a roadmap item, and a job for the extension seam if ever). Sold honestly: this is
+Record & Replay *for what your agent does* — including its web automation.
+
 ## How it works
 
 ```
@@ -54,15 +64,17 @@ agent session ──(PostToolUse)──▶ galdr hook ──append──▶ span
    **always exits 0**: it never breaks the session, even if it fails internally.
 2. **Recording** (`galdr rec start` / `stop`) — opens and closes the span, and writes
    the recording metadata.
-3. **Distillation** (`galdr distill <id>`) — normalizes the span and emits a `SKILL.md`
-   draft with instructions for the agent to complete by reading the raw span. The
-   agent writes the refined skill to a working file; galdr installs it (galdr is the
-   only writer of the skills directory).
+3. **Distillation** (`galdr distill <id>`) — renders a **complete, usable** `SKILL.md`
+   straight from the span, in the open-standard anatomy (`When to use` / `Inputs` /
+   `Steps` / `Verification`), installs it, and links it into every installed harness.
+   Finished in one, no agent pass required. For a higher ceiling, `--draft` emits
+   scaffolding an agent refines, and `--auto` lets a local model write it.
 
 ## Quickstart
 
 ```sh
 cargo install --path .
+galdr setup skill         # teach your harness(es) how to drive galdr (one time)
 
 galdr rec start demo      # start recording
 #  ... do the task with your agent (a few tool calls) ...
@@ -70,9 +82,11 @@ galdr rec stop            # close the recording, prints the rec_id
 
 galdr list                # list recordings
 galdr rec status          # inspect the active recording, if any
-galdr distill <rec_id>    # generate the skill draft
-#  ... the agent reads the span and writes the refined skill to a temp file ...
-galdr distill <rec_id> --from <temp-file>   # install the final skill
+galdr distill <rec_id>    # → a complete, discoverable skill, in one step
+
+# Optional, higher ceiling:
+galdr distill <rec_id> --draft              # scaffolding an agent refines, then…
+galdr distill <rec_id> --from <temp-file>   # …install the agent's refined skill
 ```
 
 ## More commands
@@ -82,7 +96,11 @@ galdr daemon --detach        # run the supervisor daemon (catalog indexer + sock
 galdr daemon status          # check whether the daemon is answering
 galdr daemon stop            # ask the daemon to shut down gracefully
 galdr show <rec_id>          # inspect one recording with its steps
-galdr skills                 # list installed skills, provenance, status, and readiness metrics
+galdr skills                 # list installed skills, galdr/external origin, provenance, and readiness
+galdr harnesses              # detect agent harnesses on this system and whether galdr's sensor is wired
+galdr harnesses --json       # the same, machine-readable
+galdr link                   # make distilled skills discoverable by every installed harness
+galdr link --skill <name>    # link just one skill
 galdr evaluations            # list skill evaluator outputs from the catalog
 galdr evaluations --skill <name>   # show one skill's evaluator history
 galdr outcome usage --skill <name> --rec <rec_id> --outcome success
@@ -92,6 +110,8 @@ galdr reindex                # rebuild the SQLite catalog from disk
 galdr doctor                 # diagnose config, catalog, daemon, skills, and hook wiring
 galdr setup claude --check   # check Claude Code PostToolUse hook wiring
 galdr setup claude --print   # print the safe settings.json snippet
+galdr setup codex --check    # check Codex PostToolUse hook wiring (~/.codex/hooks.json)
+galdr setup codex --print    # print the safe Codex hooks snippet
 galdr tui                    # browse recordings, inspect spans, audit skills
 
 galdr diff <a> <b>           # diff two recordings: constants vs parameters
@@ -100,6 +120,16 @@ galdr export <rec_id> --out ./export        # export metadata + summaries, no ra
 galdr export <rec_id> --out ./export --redact   # export a redacted raw copy
 
 galdr distill <rec_id> --auto      # autonomous distillation (local MLX, see below)
+```
+
+galdr is two surfaces over one catalog: the **CLI is AI-first** and the **TUI is for
+humans**. Every read command — `list`, `show`, `skills`, `evaluations`, `harnesses`,
+`outcome list` — takes `--json` and emits a single parseable document, so an agent
+consumes galdr without scraping a table:
+
+```sh
+galdr list --json | jq '.[].rec_id'
+galdr skills --json | jq '[.[] | select(.origin == "galdr")]'
 ```
 
 The daemon is optional. `list`/`show`/`skills` answer daemon-first, then from the
@@ -179,6 +209,33 @@ The sensor reads the harness fields from stdin (`tool_name`, `tool_input`,
 `tool_response`, `cwd`, `session_id`, `transcript_path`) and is a no-op when no
 recording is active.
 
+If you prefer a resilient command that finds `galdr` on `PATH` and falls back to the
+cargo bin, that form works too and is recognized by `galdr doctor` / `setup claude
+--check`:
+
+```sh
+if command -v galdr >/dev/null 2>&1; then galdr hook; \
+elif [ -x "$HOME/.cargo/bin/galdr" ]; then "$HOME/.cargo/bin/galdr" hook; fi
+```
+
+## Multi-harness: one skill, every harness
+
+galdr distills a skill once, into the open-standard skills root (`~/.agents/skills`),
+then makes it discoverable in **every harness installed on the machine**. Each harness
+loads skills from its own directory, so galdr links the canonical skill into each one:
+
+| Harness | Skills directory | Sensor wiring |
+|---|---|---|
+| Claude Code | `~/.claude/skills` | `~/.claude/settings.json` PostToolUse hook |
+| Codex | `~/.codex/skills` | `~/.codex/hooks.json` (same hook shape) |
+| Cursor | `~/.cursor/skills-cursor` | — |
+
+The link is a symlink back to the canonical copy (the same mechanism a hand-linked
+skill already uses), created on install, never clobbering a real file of the same
+name. `galdr harnesses` shows what's installed; `galdr link` (re)links every skill;
+`galdr doctor` flags any galdr skill a harness can't see. The result: record a task in
+one harness, get a reusable skill in all of them.
+
 ## On-disk layout
 
 ```
@@ -198,6 +255,11 @@ The span is the raw source of truth: append-only, immutable, inspectable. The SQ
 catalog is an **index, never the truth** — it stores one-line step summaries (no raw
 blobs), readiness/evaluation rows, and outcome indexes. `galdr reindex` rebuilds it from
 spans, recordings, skills, and outcome logs at any time.
+
+The root is `~/.galdr` by default. Set `GALDR_ROOT` to relocate it (and
+`GALDR_SKILLS_ROOT` to relocate the skills directory) — useful for hermetic tests,
+throwaway profiles, CI, or to keep the daemon's Unix socket path under the platform's
+length limit.
 
 `config.json` may also include optional capture policy for future recordings:
 
@@ -258,11 +320,32 @@ Phase 1 (shipped, built on the Phase 0 loop):
 - ✅ **Safe export path** that omits raw payloads by default and can emit redacted raw
   copies without touching the original span.
 
+Phase 2 (shipped):
+
+- ✅ **Finished in one** — `galdr distill` renders a complete, valid skill from the
+  span (open-standard `When to use` / `Inputs` / `Steps` / `Verification` anatomy) and
+  installs it, no agent pass required. `--draft` and `--auto` remain for a higher ceiling.
+- ✅ **Multi-harness discoverability** — a distilled skill is linked into every installed
+  harness's skills directory (Claude Code, Codex, Cursor); `galdr link` / `doctor` manage it.
+- ✅ **Multi-harness sensor** — `galdr setup codex` wires the same hook into Codex's
+  `hooks.json`; `galdr harnesses` shows which harnesses are wired.
+- ✅ **Session-scoped recording** — a recording binds to the session that started it, so a
+  concurrent session in another project can't leak its tool calls into the span.
+- ✅ **AI-first CLI** — `--json` on every read command.
+
 Next:
 
-- Opt-in capture of human GUI gestures.
-- A multi-agent broker (Codex / Cursor) over the same span model.
-- Real gates and real provenance plugged into the extension layer.
+- **Capture of human GUI gestures** — the deliberate scope gap above. The agent's *own*
+  browser automation is already captured (it arrives as tool calls). What's missing is
+  recording a *human* driving a browser by hand, which needs a separate pixel/DOM capture
+  layer on top of the span model — the one axis where Codex's pixel recorder does something
+  galdr does not, and a job for the extension seam rather than the core.
+- Verify the Codex sensor end to end with a live Codex recording (the wiring is in place;
+  the stdin payload is not yet confirmed field-for-field).
+- A multi-agent broker over the same span model.
+- Real gates and real provenance plugged into the extension layer (`PermissionGate`,
+  `ProvenanceSink`) — where harness-specific policy or memory integrations live, kept out
+  of the local-first core.
 
 ## Contributing
 

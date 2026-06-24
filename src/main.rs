@@ -13,13 +13,16 @@ mod doctor;
 mod engine;
 mod export;
 mod ext;
+mod harness;
 mod hook;
 mod ipc;
+mod link;
 mod outcome;
 mod parametrize;
 mod paths;
 mod record;
 mod setup;
+mod skill;
 mod span;
 mod summary;
 mod tui;
@@ -60,8 +63,11 @@ enum Commands {
         /// rec_id of the recording to distill.
         id: String,
         /// Install the final SKILL.md from this file (distilled by the agent).
-        #[arg(long, value_name = "FILE", conflicts_with = "auto")]
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["auto", "draft"])]
         from: Option<PathBuf>,
+        /// Write the agent-assisted scaffolding instead of a complete skill.
+        #[arg(long, conflicts_with = "auto")]
+        draft: bool,
         /// Distill autonomously with a local MLX engine.
         #[arg(long)]
         auto: bool,
@@ -71,22 +77,61 @@ enum Commands {
     },
 
     /// List closed recordings.
-    List,
+    List {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Show one recording with its steps.
     Show {
         /// rec_id of the recording.
         id: String,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
     },
 
     /// List installed skills and their provenance.
-    Skills,
+    Skills {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Detect the agent harnesses installed on this system.
+    Harnesses {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Make distilled skills discoverable by every installed harness.
+    ///
+    /// galdr installs a skill once in the open-standard root; this links it into
+    /// each detected harness's skills directory (Claude Code, Codex, Cursor) so the
+    /// harness it was recorded in can actually load it.
+    Link {
+        /// Link only this skill (default: every galdr-distilled skill).
+        #[arg(long)]
+        skill: Option<String>,
+        /// Link every skill in the open-standard root, not just galdr-distilled
+        /// ones — sync the whole directory across harnesses.
+        #[arg(long)]
+        all: bool,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// List skill evaluator outputs from the catalog.
     Evaluations {
         /// Limit output to one skill name.
         #[arg(long)]
         skill: Option<String>,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Record or inspect skill usage outcomes for later offline evaluation.
@@ -186,6 +231,25 @@ enum SetupTarget {
         #[arg(long)]
         print: bool,
     },
+    /// Inspect or print the Codex PostToolUse hook snippet (~/.codex/hooks.json).
+    Codex {
+        /// Check whether ~/.codex/hooks.json already has galdr hook wiring.
+        #[arg(long)]
+        check: bool,
+        /// Print the recommended hooks snippet.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Install galdr's own skill so every harness knows how to drive galdr.
+    ///
+    /// The skill is embedded in the binary and version-stamped, so it never drifts
+    /// from the CLI. Installs into the open-standard root and links it into every
+    /// detected harness. `--print` writes it to stdout instead.
+    Skill {
+        /// Print the skill to stdout instead of installing it.
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -240,6 +304,9 @@ enum OutcomeAction {
         /// Limit output to one skill name.
         #[arg(long)]
         skill: Option<String>,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -267,19 +334,24 @@ fn main() {
         Commands::Distill {
             id,
             from,
+            draft,
             auto,
             engine,
         } => {
             if auto {
                 exit_on_error(distill::distill_auto(&id, engine.as_deref()))
             } else {
-                exit_on_error(distill::distill(&id, from.as_deref()))
+                exit_on_error(distill::distill(&id, from.as_deref(), draft))
             }
         }
-        Commands::List => exit_on_error(cmd_list()),
-        Commands::Show { id } => exit_on_error(cmd_show(&id)),
-        Commands::Skills => exit_on_error(cmd_skills()),
-        Commands::Evaluations { skill } => exit_on_error(cmd_evaluations(skill.as_deref())),
+        Commands::List { json } => exit_on_error(cmd_list(json)),
+        Commands::Show { id, json } => exit_on_error(cmd_show(&id, json)),
+        Commands::Skills { json } => exit_on_error(cmd_skills(json)),
+        Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
+        Commands::Link { skill, all, json } => exit_on_error(cmd_link(skill.as_deref(), all, json)),
+        Commands::Evaluations { skill, json } => {
+            exit_on_error(cmd_evaluations(skill.as_deref(), json))
+        }
         Commands::Outcome { action } => exit_on_error(cmd_outcome(action)),
         Commands::Tui => exit_on_error(tui::run()),
         Commands::Export {
@@ -296,6 +368,21 @@ fn main() {
                 }
                 if check || !print {
                     exit_on_error(setup::claude_check());
+                }
+            }
+            SetupTarget::Codex { check, print } => {
+                if print {
+                    setup::codex_print();
+                }
+                if check || !print {
+                    exit_on_error(setup::codex_check());
+                }
+            }
+            SetupTarget::Skill { print } => {
+                if print {
+                    print!("{}", skill::render());
+                } else {
+                    exit_on_error(cmd_setup_skill());
                 }
             }
         },
@@ -323,6 +410,13 @@ fn cmd_rec_status() -> anyhow::Result<()> {
     println!("  rec_id: {}", active.rec_id);
     println!("  started_at: {}", active.started_at);
     println!("  steps: {steps}");
+    if let Some(origin) = &active.origin_cwd {
+        println!("  origin_cwd: {origin}");
+    }
+    match &active.bound_session {
+        Some(session) => println!("  bound_session: {session}"),
+        None => println!("  bound_session: (unbound — first matching event will bind)"),
+    }
     println!("  span: {}", span_path.display());
     if let Some(transcript_path) = active.transcript_path {
         println!("  transcript: {transcript_path}");
@@ -366,22 +460,27 @@ fn cmd_daemon_stop() -> anyhow::Result<()> {
 /// then the read-only database, then an in-memory index built straight from disk.
 /// Whichever answers first wins; the disk tiers guarantee the CLI keeps working
 /// even with no daemon and no usable database file.
-fn cmd_list() -> anyhow::Result<()> {
+fn cmd_list(json: bool) -> anyhow::Result<()> {
     let recordings = if let Ok(ipc::Response::Recordings { recordings }) =
         ipc::query(&ipc::Request::ListRecordings)
     {
         recordings
     } else if let Some(rows) = from_db(catalog::list_recordings) {
         rows
+    } else if json {
+        Vec::new()
     } else {
         // Last resort: never let `list` regress, even if SQLite is unusable.
         return record::list();
     };
+    if json {
+        return print_json(&recordings);
+    }
     print_recordings(&recordings);
     Ok(())
 }
 
-fn cmd_show(id: &str) -> anyhow::Result<()> {
+fn cmd_show(id: &str, json: bool) -> anyhow::Result<()> {
     let detail = if let Ok(ipc::Response::Recording { recording }) =
         ipc::query(&ipc::Request::ShowRecording { id: id.to_string() })
     {
@@ -389,6 +488,9 @@ fn cmd_show(id: &str) -> anyhow::Result<()> {
     } else {
         from_db(|c| catalog::show_recording(c, id)).flatten()
     };
+    if json {
+        return print_json(&detail);
+    }
     match detail {
         Some(detail) => print_recording_detail(&detail),
         None => println!("recording {id} not found"),
@@ -396,20 +498,113 @@ fn cmd_show(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_skills() -> anyhow::Result<()> {
+fn cmd_skills(json: bool) -> anyhow::Result<()> {
     let skills = if let Ok(ipc::Response::Skills { skills }) = ipc::query(&ipc::Request::ListSkills)
     {
         skills
     } else {
         from_db(catalog::list_skills).unwrap_or_default()
     };
+    if json {
+        return print_json(&skills);
+    }
     print_skills(&skills);
     Ok(())
 }
 
-fn cmd_evaluations(skill: Option<&str>) -> anyhow::Result<()> {
+fn cmd_harnesses(json: bool) -> anyhow::Result<()> {
+    let harnesses = harness::detect();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&harnesses)?);
+        return Ok(());
+    }
+    println!("Agent harnesses on this system:");
+    for h in &harnesses {
+        let mark = if h.detected { "✓" } else { " " };
+        let state = if h.detected { "detected" } else { "absent" };
+        let mut detail = Vec::new();
+        if let Some(cfg) = &h.config_dir {
+            detail.push(cfg.clone());
+        }
+        if h.on_path {
+            detail.push("on PATH".to_string());
+        }
+        if !h.notes.is_empty() {
+            detail.push(h.notes.clone());
+        }
+        let detail = if detail.is_empty() {
+            String::new()
+        } else {
+            format!("  ({})", detail.join(" · "))
+        };
+        println!("{mark} {:<13} {state}{detail}", h.name);
+    }
+    Ok(())
+}
+
+fn cmd_link(skill: Option<&str>, all: bool, json: bool) -> anyhow::Result<()> {
+    let results = match skill {
+        Some(name) => link::link_skill(name)?,
+        None => link::link_all(all)?,
+    };
+    if json {
+        return print_json(&results);
+    }
+    if results.is_empty() {
+        println!(
+            "No skills to link, or no harness with a known skills directory is installed.\n\
+             Distill a skill first (`galdr distill <id>`), then run `galdr link`."
+        );
+        return Ok(());
+    }
+    for r in &results {
+        let mark = match r.status {
+            link::LinkStatus::Linked | link::LinkStatus::AlreadyLinked => "✓",
+            link::LinkStatus::SameRoot => "·",
+            link::LinkStatus::Conflict | link::LinkStatus::Failed => "!",
+        };
+        println!(
+            "{mark} {:<24} → {:<12} {}  ({})",
+            r.skill,
+            r.harness,
+            r.status.as_str(),
+            r.link_path
+        );
+    }
+    Ok(())
+}
+
+fn cmd_setup_skill() -> anyhow::Result<()> {
+    let results = skill::install()?;
+    let reached: Vec<&str> = results
+        .iter()
+        .filter(|r| {
+            !matches!(
+                r.status,
+                link::LinkStatus::Conflict | link::LinkStatus::Failed
+            )
+        })
+        .map(|r| r.harness.as_str())
+        .collect();
+    println!(
+        "galdr skill installed (version {}).",
+        env!("CARGO_PKG_VERSION")
+    );
+    if reached.is_empty() {
+        println!("No harness with a known skills directory is installed yet.");
+    } else {
+        println!("Discoverable in: {}", reached.join(", "));
+        println!("Your agent now knows how to record → distill → replay with galdr.");
+    }
+    Ok(())
+}
+
+fn cmd_evaluations(skill: Option<&str>, json: bool) -> anyhow::Result<()> {
     let evaluations =
         from_db(|conn| catalog::list_skill_evaluations(conn, skill)).unwrap_or_default();
+    if json {
+        return print_json(&evaluations);
+    }
     print_evaluations(&evaluations);
     Ok(())
 }
@@ -434,6 +629,7 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
                 manual_intervention_count: manual_interventions,
                 notes,
             })?;
+            warn_if_skill_missing(&event.skill_name);
             println!(
                 "usage recorded: {} {} outcome={} rec_id={}",
                 event.event_id, event.skill_name, event.outcome, event.rec_id
@@ -455,6 +651,7 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
                 confidence,
                 notes,
             })?;
+            warn_if_skill_missing(&event.skill_name);
             println!(
                 "outcome recorded: {} {} {}:{} confidence={:.2}",
                 event.event_id,
@@ -464,16 +661,36 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
                 event.confidence
             );
         }
-        OutcomeAction::List { skill } => {
+        OutcomeAction::List { skill, json } => {
             let usages = from_db(|conn| catalog::list_skill_usage(conn, skill.as_deref()))
                 .unwrap_or_default();
             let outcomes = from_db(|conn| catalog::list_skill_outcomes(conn, skill.as_deref()))
                 .unwrap_or_default();
+            if json {
+                return print_json(&serde_json::json!({
+                    "usage": usages,
+                    "labels": outcomes,
+                }));
+            }
             print_usage(&usages);
             print_outcomes(&outcomes);
         }
     }
     Ok(())
+}
+
+/// Warns (without failing) when an outcome is recorded for a skill that is not
+/// installed. The event is still written — a skill can be uninstalled after use —
+/// but a typo'd name would otherwise silently poison the supervised-data lane.
+fn warn_if_skill_missing(skill_name: &str) {
+    if !outcome::skill_exists(skill_name) {
+        eprintln!(
+            "warning: skill '{skill_name}' is not installed under {}; recording it anyway",
+            paths::skills_root()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "the skills root".to_string())
+        );
+    }
 }
 
 fn cmd_diff(a: &str, b: &str) -> anyhow::Result<()> {
@@ -509,6 +726,13 @@ where
     }
     let conn = catalog::open_in_memory_indexed().ok()?;
     query(&conn).ok()
+}
+
+/// Prints any serializable value as pretty JSON on stdout. The shared sink for
+/// every `--json` flag, so the AI-first surface stays consistent and parseable.
+fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }
 
 fn print_recordings(recordings: &[catalog::RecordingRow]) {
@@ -553,7 +777,25 @@ fn print_skills(skills: &[catalog::SkillRow]) {
         println!("(no skills distilled yet — use `galdr distill <id>`)");
         return;
     }
-    for skill in skills {
+    // galdr-distilled skills first, then external ones (other harnesses / hand-authored).
+    let mut sorted: Vec<&catalog::SkillRow> = skills.iter().collect();
+    sorted.sort_by(|a, b| {
+        let a_external = a.origin != catalog::ORIGIN_GALDR;
+        let b_external = b.origin != catalog::ORIGIN_GALDR;
+        a_external
+            .cmp(&b_external)
+            .then_with(|| a.skill_name.cmp(&b.skill_name))
+    });
+    let galdr_count = sorted
+        .iter()
+        .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+        .count();
+    for skill in sorted {
+        let origin = if skill.origin == catalog::ORIGIN_GALDR {
+            "galdr "
+        } else {
+            "extern"
+        };
         let delta = match skill.readiness_delta.cmp(&0) {
             std::cmp::Ordering::Greater => format!("+{}", skill.readiness_delta),
             std::cmp::Ordering::Less => skill.readiness_delta.to_string(),
@@ -565,8 +807,9 @@ fn print_skills(skills: &[catalog::SkillRow]) {
             None => "← (no provenance)".to_string(),
         };
         println!(
-            "{:<28}  {:<11}  readiness {:>3} ({:>3})  {:<36}  {}",
+            "{:<28}  {:<6}  {:<11}  readiness {:>3} ({:>3})  {:<36}  {}",
             skill.skill_name,
+            origin,
             skill.status,
             skill.readiness_score,
             delta,
@@ -574,6 +817,11 @@ fn print_skills(skills: &[catalog::SkillRow]) {
             skill.readiness_notes
         );
     }
+    println!(
+        "\n{} galdr · {} external",
+        galdr_count,
+        skills.len() - galdr_count
+    );
 }
 
 fn print_evaluations(evaluations: &[catalog::SkillEvaluationRow]) {

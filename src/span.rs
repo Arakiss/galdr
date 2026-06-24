@@ -46,6 +46,15 @@ pub fn append_event(span_path: &Path, event: &Event) -> Result<()> {
     Ok(())
 }
 
+/// Flushes the span to stable storage. Called once when a recording is closed, so
+/// the whole recording is durable before its metadata is written — without paying
+/// an `fsync` on the sensor's hot path, which the design keeps instantaneous. Any
+/// failure (e.g. the file is gone) is the caller's to treat as best-effort.
+pub fn fsync(span_path: &Path) -> Result<()> {
+    OpenOptions::new().read(true).open(span_path)?.sync_all()?;
+    Ok(())
+}
+
 /// Counts the non-empty lines of the span. Returns 0 if the file does not exist,
 /// so the sensor gets the next event's `seq` without failing on the first call.
 pub fn count_events(span_path: &Path) -> u64 {

@@ -53,6 +53,16 @@ pub fn run() -> Result<()> {
     }
     let input: HookInput = serde_json::from_str(&buf)?;
 
+    // Session scoping: a single global `active` flag means every concurrent agent
+    // session's hook sees this recording. Without scoping, a session in another
+    // project would leak its tool calls (and their payloads) into this span. Bind
+    // the recording to the first session whose event lands under `origin_cwd`, then
+    // record only that session.
+    let decision = capture_decision(&active, input.session_id.as_deref(), input.cwd.as_deref());
+    if matches!(decision, Capture::Skip) {
+        return Ok(());
+    }
+
     let span_path = paths::span_file(&active.rec_id)?;
     let mut event = span::Event {
         ts: record::now_rfc3339(),
@@ -90,17 +100,74 @@ pub fn run() -> Result<()> {
     // Provenance seam: the core records nothing.
     ext::NoopExt.record(&event);
 
-    // Capture the session transcript once, from the first event.
-    if active.transcript_path.is_none()
-        && let Some(transcript_path) = input.transcript_path
-    {
+    // Persist any new session binding and capture the transcript once, in a single
+    // write of the active flag.
+    let new_binding = match decision {
+        Capture::RecordAndBind(session_id) => Some(session_id),
+        _ => None,
+    };
+    let new_transcript = input
+        .transcript_path
+        .filter(|_| active.transcript_path.is_none());
+    if new_binding.is_some() || new_transcript.is_some() {
         let updated = record::ActiveRec {
-            transcript_path: Some(transcript_path),
+            bound_session: new_binding.or_else(|| active.bound_session.clone()),
+            transcript_path: new_transcript.or_else(|| active.transcript_path.clone()),
             ..active
         };
         let _ = record::write_active(&updated);
     }
     Ok(())
+}
+
+/// What the sensor should do with one event, given the recording's binding state.
+enum Capture {
+    /// Drop it: a different session, or a foreign session before binding.
+    Skip,
+    /// Append it; the recording is already bound (or cannot be session-scoped).
+    Record,
+    /// Append it and lock the recording onto this session id.
+    RecordAndBind(String),
+}
+
+/// Decides capture for one event. The rule: a session-less event is always
+/// recorded (so harnesses that omit the id, and the no-scope case, keep working);
+/// once bound, only the bound session records; before binding, the first event
+/// carrying a session id binds — but only if it happened under `origin_cwd`, so a
+/// concurrent session in another directory can never claim the recording.
+fn capture_decision(
+    active: &record::ActiveRec,
+    session_id: Option<&str>,
+    cwd: Option<&str>,
+) -> Capture {
+    match active.bound_session.as_deref() {
+        Some(bound) => match session_id {
+            Some(sid) if sid == bound => Capture::Record,
+            Some(_) => Capture::Skip,
+            None => Capture::Record,
+        },
+        None => match session_id {
+            None => Capture::Record,
+            Some(sid) => {
+                let cwd_ok = match (active.origin_cwd.as_deref(), cwd) {
+                    (None, _) | (Some(_), None) => true,
+                    (Some(origin), Some(cwd)) => path_within(cwd, origin),
+                };
+                if cwd_ok {
+                    Capture::RecordAndBind(sid.to_string())
+                } else {
+                    Capture::Skip
+                }
+            }
+        },
+    }
+}
+
+/// True if `path` is `base` itself or lives under it, comparing path components so
+/// `/a/bc` is not treated as under `/a/b`.
+fn path_within(path: &str, base: &str) -> bool {
+    let base = base.trim_end_matches('/');
+    path == base || path.starts_with(&format!("{base}/"))
 }
 
 fn denied_by_capture_policy(event: &span::Event, capture: &config::CaptureConfig) -> bool {
@@ -136,4 +203,84 @@ fn apply_response_cap(event: &mut span::Event, max_chars: Option<usize>) {
         "original_chars": raw.chars().count(),
         "preview": preview,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record::ActiveRec;
+
+    fn active(origin: Option<&str>, bound: Option<&str>) -> ActiveRec {
+        ActiveRec {
+            rec_id: "01X".into(),
+            name: "t".into(),
+            started_at: "ts".into(),
+            transcript_path: None,
+            origin_cwd: origin.map(String::from),
+            bound_session: bound.map(String::from),
+        }
+    }
+
+    #[test]
+    fn binds_to_the_first_session_under_origin() {
+        let a = active(Some("/proj/galdr"), None);
+        match capture_decision(&a, Some("sessA"), Some("/proj/galdr/sub")) {
+            Capture::RecordAndBind(s) => assert_eq!(s, "sessA"),
+            _ => panic!("should bind to sessA"),
+        }
+    }
+
+    #[test]
+    fn foreign_session_in_another_dir_is_skipped_before_binding() {
+        let a = active(Some("/proj/galdr"), None);
+        assert!(matches!(
+            capture_decision(&a, Some("sessB"), Some("/proj/eldr")),
+            Capture::Skip
+        ));
+    }
+
+    #[test]
+    fn once_bound_only_that_session_records() {
+        let a = active(Some("/proj/galdr"), Some("sessA"));
+        assert!(matches!(
+            capture_decision(&a, Some("sessA"), Some("/anywhere")),
+            Capture::Record
+        ));
+        assert!(matches!(
+            capture_decision(&a, Some("sessB"), Some("/proj/galdr")),
+            Capture::Skip
+        ));
+    }
+
+    #[test]
+    fn sessionless_events_always_record() {
+        // Harnesses that omit session_id, and the no-scope tests, keep working.
+        let unbound = active(Some("/proj/galdr"), None);
+        assert!(matches!(
+            capture_decision(&unbound, None, Some("/tmp")),
+            Capture::Record
+        ));
+        let bound = active(Some("/proj/galdr"), Some("sessA"));
+        assert!(matches!(
+            capture_decision(&bound, None, None),
+            Capture::Record
+        ));
+    }
+
+    #[test]
+    fn no_origin_binds_to_any_first_session() {
+        let a = active(None, None);
+        assert!(matches!(
+            capture_decision(&a, Some("sessA"), Some("/anywhere")),
+            Capture::RecordAndBind(_)
+        ));
+    }
+
+    #[test]
+    fn path_within_respects_component_boundaries() {
+        assert!(path_within("/a/b", "/a/b"));
+        assert!(path_within("/a/b/c", "/a/b"));
+        assert!(!path_within("/a/bc", "/a/b"));
+        assert!(!path_within("/x", "/a/b"));
+    }
 }

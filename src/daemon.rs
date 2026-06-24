@@ -12,13 +12,14 @@
 //!   missing catalog is repaired automatically.
 //! - **No network.** It binds a Unix-domain socket under `~/.galdr`, chmod 0600.
 
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::Connection;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -35,6 +36,9 @@ type Db = Arc<Mutex<Connection>>;
 /// background and returns; otherwise it runs the event loop until a shutdown
 /// signal or request.
 pub fn run(detach: bool) -> Result<()> {
+    // Fail fast, with an actionable message, before a long socket path turns into a
+    // cryptic bind() error inside a detached child whose stderr is gone.
+    validate_socket_path()?;
     if detach {
         return spawn_detached();
     }
@@ -65,6 +69,10 @@ fn already_running() -> bool {
 
 /// Re-exec `galdr daemon` detached: own process group, null stdio. Dependency-free
 /// (no libc); good enough for a CLI-launched background daemon.
+///
+/// The child's stderr is gone, so a startup failure would otherwise be silent and
+/// `--detach` would happily report a pid for a process that already died. We poll
+/// the control socket briefly and report the real outcome.
 fn spawn_detached() -> Result<()> {
     let exe = std::env::current_exe().context("could not find the galdr executable")?;
     let mut cmd = std::process::Command::new(exe);
@@ -73,8 +81,38 @@ fn spawn_detached() -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0);
-    let child = cmd.spawn().context("could not spawn the detached daemon")?;
-    println!("galdr daemon started (pid {})", child.id());
+    let pid = cmd
+        .spawn()
+        .context("could not spawn the detached daemon")?
+        .id();
+
+    for _ in 0..40 {
+        if already_running() {
+            println!("galdr daemon started (pid {pid})");
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    bail!(
+        "daemon spawned (pid {pid}) but never answered on the control socket within 2s; \
+         it likely failed to start. Run `galdr daemon` in the foreground to see the error."
+    );
+}
+
+/// Guards against the Unix-domain socket path exceeding `SUN_LEN` (104 bytes on
+/// macOS, 108 on Linux), which would make `bind()` fail with an opaque error. A
+/// long `GALDR_ROOT` or `$HOME` is the usual cause; the fix is a shorter root.
+fn validate_socket_path() -> Result<()> {
+    const MAX: usize = 100; // conservative across platforms, room for the NUL.
+    let sock = paths::socket_path()?;
+    let len = sock.as_os_str().as_bytes().len();
+    if len > MAX {
+        bail!(
+            "daemon socket path is too long ({len} bytes, limit ~{MAX}): {}\n\
+             Set GALDR_ROOT to a shorter directory (for example one under /tmp).",
+            sock.display()
+        );
+    }
     Ok(())
 }
 
