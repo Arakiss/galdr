@@ -72,16 +72,27 @@ enum Commands {
     },
 
     /// List closed recordings.
-    List,
+    List {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Show one recording with its steps.
     Show {
         /// rec_id of the recording.
         id: String,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
     },
 
     /// List installed skills and their provenance.
-    Skills,
+    Skills {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Detect the agent harnesses installed on this system.
     Harnesses {
@@ -95,6 +106,9 @@ enum Commands {
         /// Limit output to one skill name.
         #[arg(long)]
         skill: Option<String>,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Record or inspect skill usage outcomes for later offline evaluation.
@@ -248,6 +262,9 @@ enum OutcomeAction {
         /// Limit output to one skill name.
         #[arg(long)]
         skill: Option<String>,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -284,11 +301,13 @@ fn main() {
                 exit_on_error(distill::distill(&id, from.as_deref()))
             }
         }
-        Commands::List => exit_on_error(cmd_list()),
-        Commands::Show { id } => exit_on_error(cmd_show(&id)),
-        Commands::Skills => exit_on_error(cmd_skills()),
+        Commands::List { json } => exit_on_error(cmd_list(json)),
+        Commands::Show { id, json } => exit_on_error(cmd_show(&id, json)),
+        Commands::Skills { json } => exit_on_error(cmd_skills(json)),
         Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
-        Commands::Evaluations { skill } => exit_on_error(cmd_evaluations(skill.as_deref())),
+        Commands::Evaluations { skill, json } => {
+            exit_on_error(cmd_evaluations(skill.as_deref(), json))
+        }
         Commands::Outcome { action } => exit_on_error(cmd_outcome(action)),
         Commands::Tui => exit_on_error(tui::run()),
         Commands::Export {
@@ -382,22 +401,27 @@ fn cmd_daemon_stop() -> anyhow::Result<()> {
 /// then the read-only database, then an in-memory index built straight from disk.
 /// Whichever answers first wins; the disk tiers guarantee the CLI keeps working
 /// even with no daemon and no usable database file.
-fn cmd_list() -> anyhow::Result<()> {
+fn cmd_list(json: bool) -> anyhow::Result<()> {
     let recordings = if let Ok(ipc::Response::Recordings { recordings }) =
         ipc::query(&ipc::Request::ListRecordings)
     {
         recordings
     } else if let Some(rows) = from_db(catalog::list_recordings) {
         rows
+    } else if json {
+        Vec::new()
     } else {
         // Last resort: never let `list` regress, even if SQLite is unusable.
         return record::list();
     };
+    if json {
+        return print_json(&recordings);
+    }
     print_recordings(&recordings);
     Ok(())
 }
 
-fn cmd_show(id: &str) -> anyhow::Result<()> {
+fn cmd_show(id: &str, json: bool) -> anyhow::Result<()> {
     let detail = if let Ok(ipc::Response::Recording { recording }) =
         ipc::query(&ipc::Request::ShowRecording { id: id.to_string() })
     {
@@ -405,6 +429,9 @@ fn cmd_show(id: &str) -> anyhow::Result<()> {
     } else {
         from_db(|c| catalog::show_recording(c, id)).flatten()
     };
+    if json {
+        return print_json(&detail);
+    }
     match detail {
         Some(detail) => print_recording_detail(&detail),
         None => println!("recording {id} not found"),
@@ -412,13 +439,16 @@ fn cmd_show(id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_skills() -> anyhow::Result<()> {
+fn cmd_skills(json: bool) -> anyhow::Result<()> {
     let skills = if let Ok(ipc::Response::Skills { skills }) = ipc::query(&ipc::Request::ListSkills)
     {
         skills
     } else {
         from_db(catalog::list_skills).unwrap_or_default()
     };
+    if json {
+        return print_json(&skills);
+    }
     print_skills(&skills);
     Ok(())
 }
@@ -453,9 +483,12 @@ fn cmd_harnesses(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn cmd_evaluations(skill: Option<&str>) -> anyhow::Result<()> {
+fn cmd_evaluations(skill: Option<&str>, json: bool) -> anyhow::Result<()> {
     let evaluations =
         from_db(|conn| catalog::list_skill_evaluations(conn, skill)).unwrap_or_default();
+    if json {
+        return print_json(&evaluations);
+    }
     print_evaluations(&evaluations);
     Ok(())
 }
@@ -512,11 +545,17 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
                 event.confidence
             );
         }
-        OutcomeAction::List { skill } => {
+        OutcomeAction::List { skill, json } => {
             let usages = from_db(|conn| catalog::list_skill_usage(conn, skill.as_deref()))
                 .unwrap_or_default();
             let outcomes = from_db(|conn| catalog::list_skill_outcomes(conn, skill.as_deref()))
                 .unwrap_or_default();
+            if json {
+                return print_json(&serde_json::json!({
+                    "usage": usages,
+                    "labels": outcomes,
+                }));
+            }
             print_usage(&usages);
             print_outcomes(&outcomes);
         }
@@ -571,6 +610,13 @@ where
     }
     let conn = catalog::open_in_memory_indexed().ok()?;
     query(&conn).ok()
+}
+
+/// Prints any serializable value as pretty JSON on stdout. The shared sink for
+/// every `--json` flag, so the AI-first surface stays consistent and parseable.
+fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
 }
 
 fn print_recordings(recordings: &[catalog::RecordingRow]) {

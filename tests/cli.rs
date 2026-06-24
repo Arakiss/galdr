@@ -131,6 +131,93 @@ const BASH_STATUS: &str =
     r#"{"tool_name":"Bash","tool_input":{"command":"git status"},"tool_response":{}}"#;
 
 #[test]
+fn json_output_is_machine_readable() {
+    // The CLI is the AI-first surface: every --json flag must emit a single,
+    // parseable JSON document an agent can consume without scraping a table.
+    let sb = Sandbox::new();
+    let id = sb.record("json task", &[BASH_STATUS]);
+
+    let refined = sb.home().join("r.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-json-task\ndescription: \"json\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let parse = |args: &[&str]| -> serde_json::Value {
+        let out = sb.run(args);
+        assert!(out.status.success(), "{args:?} failed");
+        serde_json::from_str(&stdout(&out))
+            .unwrap_or_else(|e| panic!("{args:?} did not emit valid JSON: {e}"))
+    };
+
+    // list → array with our recording
+    let list = parse(&["list", "--json"]);
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["rec_id"] == id.as_str())
+    );
+
+    // show → object with steps
+    let show = parse(&["show", &id, "--json"]);
+    assert_eq!(show["recording"]["name"], "json task");
+    assert_eq!(show["steps"].as_array().unwrap().len(), 1);
+
+    // skills → array carrying the origin classification
+    let skills = parse(&["skills", "--json"]);
+    let skill = skills
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["skill_name"] == "galdr-json-task")
+        .expect("the distilled skill is listed");
+    assert_eq!(skill["origin"], "galdr");
+
+    // harnesses → array, always non-empty (the known set)
+    let harnesses = parse(&["harnesses", "--json"]);
+    assert!(!harnesses.as_array().unwrap().is_empty());
+    assert!(
+        harnesses
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["key"] == "claude")
+    );
+
+    // outcome list → object with usage/labels keys
+    assert!(
+        sb.run(&[
+            "outcome",
+            "usage",
+            "--skill",
+            "galdr-json-task",
+            "--rec",
+            &id,
+            "--outcome",
+            "success",
+        ])
+        .status
+        .success()
+    );
+    let outcomes = parse(&["outcome", "list", "--json"]);
+    assert!(outcomes["usage"].is_array());
+    assert!(outcomes["labels"].is_array());
+}
+
+#[test]
 fn sensor_never_breaks_the_session() {
     let sb = Sandbox::new();
 

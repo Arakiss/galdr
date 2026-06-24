@@ -104,6 +104,16 @@ galdr export <rec_id> --out ./export --redact   # export a redacted raw copy
 galdr distill <rec_id> --auto      # autonomous distillation (local MLX, see below)
 ```
 
+galdr is two surfaces over one catalog: the **CLI is AI-first** and the **TUI is for
+humans**. Every read command — `list`, `show`, `skills`, `evaluations`, `harnesses`,
+`outcome list` — takes `--json` and emits a single parseable document, so an agent
+consumes galdr without scraping a table:
+
+```sh
+galdr list --json | jq '.[].rec_id'
+galdr skills --json | jq '[.[] | select(.origin == "galdr")]'
+```
+
 The daemon is optional. `list`/`show`/`skills` answer daemon-first, then from the
 read-only catalog, then from a fresh in-memory index built straight from disk — so the
 CLI works whether or not the daemon is running. Write paths also keep the local catalog

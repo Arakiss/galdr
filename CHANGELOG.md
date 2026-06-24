@@ -41,6 +41,9 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
   `PATH`, and reports whether galdr's hook is wired in.
 - `galdr skills` now labels each skill `galdr` or `external` and lists galdr-distilled
   skills first, so your own distilled skills are not buried among other harnesses'.
+- `--json` on every read command (`list`, `show`, `skills`, `evaluations`,
+  `harnesses`, `outcome list`): the CLI is the AI-first surface, so an agent consumes
+  galdr's state as structured data instead of scraping a human table.
 
 ### Changed
 
