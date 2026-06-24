@@ -112,10 +112,10 @@ fn info_for(k: &Known, home: Option<&PathBuf>) -> HarnessInfo {
         .filter(|p| p.exists())
         .map(|p| p.display().to_string());
     let on_path = binary_on_path(k.bin);
-    let galdr_hook = if k.key == "claude" {
-        setup::claude_hook_configured()
-    } else {
-        None
+    let galdr_hook = match k.key {
+        "claude" => setup::claude_hook_configured(),
+        "codex" => setup::codex_hook_configured(),
+        _ => None,
     };
     let skills_dir = home
         .zip(k.skills_subdir)
@@ -157,14 +157,14 @@ mod tests {
         let found = detect();
         assert_eq!(found.len(), KNOWN.len());
         assert!(found.iter().any(|h| h.key == "claude"));
-        // Claude Code is the one galdr can wire a hook into, so its flag is Some.
-        let claude = found.iter().find(|h| h.key == "claude").unwrap();
-        // galdr_hook is Some(true|false) only when a Claude settings file exists;
-        // either way the field is well-formed and the entry is present.
-        let _ = claude.galdr_hook;
-        // Other harnesses never carry a hook flag.
-        let codex = found.iter().find(|h| h.key == "codex").unwrap();
-        assert!(codex.galdr_hook.is_none());
+        // galdr can wire a hook into Claude Code and Codex, so their flag may be Some
+        // (depending on whether a settings/hooks file exists); the field is always
+        // well-formed and the entries are present.
+        let _ = found.iter().find(|h| h.key == "claude").unwrap().galdr_hook;
+        let _ = found.iter().find(|h| h.key == "codex").unwrap().galdr_hook;
+        // A harness galdr can't wire (no known hook file) never carries a flag.
+        let cursor = found.iter().find(|h| h.key == "cursor").unwrap();
+        assert!(cursor.galdr_hook.is_none());
     }
 
     #[test]

@@ -373,18 +373,17 @@ impl<C: Catalog> App<C> {
         self.in_detail = true;
     }
 
-    /// Distills a draft for the selected recording through the sanctioned path —
-    /// galdr stays the only writer of the skills directory.
+    /// Distills a complete skill for the selected recording through the sanctioned
+    /// path — galdr stays the only writer of the skills directory.
     fn distill_selected(&mut self) {
         let Some(rec) = self.selected_recording() else {
             return;
         };
         let id = rec.rec_id.clone();
-        match distill::distill(&id, None) {
+        match distill::distill(&id, None, false) {
             Ok(()) => {
-                self.status = format!(
-                    "draft written for {id} — refine, then `galdr distill {id} --from <file>`"
-                );
+                self.status =
+                    format!("distilled {id} into a skill — now discoverable in your harnesses");
                 let _ = self.catalog.refresh();
                 self.recordings = self.catalog.recordings();
                 self.skills = self.catalog.skills();

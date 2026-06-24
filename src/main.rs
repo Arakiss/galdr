@@ -62,8 +62,11 @@ enum Commands {
         /// rec_id of the recording to distill.
         id: String,
         /// Install the final SKILL.md from this file (distilled by the agent).
-        #[arg(long, value_name = "FILE", conflicts_with = "auto")]
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["auto", "draft"])]
         from: Option<PathBuf>,
+        /// Write the agent-assisted scaffolding instead of a complete skill.
+        #[arg(long, conflicts_with = "auto")]
+        draft: bool,
         /// Distill autonomously with a local MLX engine.
         #[arg(long)]
         auto: bool,
@@ -227,6 +230,15 @@ enum SetupTarget {
         #[arg(long)]
         print: bool,
     },
+    /// Inspect or print the Codex PostToolUse hook snippet (~/.codex/hooks.json).
+    Codex {
+        /// Check whether ~/.codex/hooks.json already has galdr hook wiring.
+        #[arg(long)]
+        check: bool,
+        /// Print the recommended hooks snippet.
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -311,13 +323,14 @@ fn main() {
         Commands::Distill {
             id,
             from,
+            draft,
             auto,
             engine,
         } => {
             if auto {
                 exit_on_error(distill::distill_auto(&id, engine.as_deref()))
             } else {
-                exit_on_error(distill::distill(&id, from.as_deref()))
+                exit_on_error(distill::distill(&id, from.as_deref(), draft))
             }
         }
         Commands::List { json } => exit_on_error(cmd_list(json)),
@@ -344,6 +357,14 @@ fn main() {
                 }
                 if check || !print {
                     exit_on_error(setup::claude_check());
+                }
+            }
+            SetupTarget::Codex { check, print } => {
+                if print {
+                    setup::codex_print();
+                }
+                if check || !print {
+                    exit_on_error(setup::codex_check());
                 }
             }
         },

@@ -125,6 +125,12 @@ pub fn claude_settings() -> Result<PathBuf> {
     Ok(home()?.join(".claude").join("settings.json"))
 }
 
+/// Codex hooks file inspected by `galdr setup codex`. Codex uses the same hook
+/// shape as Claude Code, in its own `~/.codex/hooks.json`.
+pub fn codex_hooks() -> Result<PathBuf> {
+    Ok(home()?.join(".codex").join("hooks.json"))
+}
+
 /// Skills root: `$GALDR_SKILLS_ROOT` if set, else `~/.agents/skills`.
 pub fn skills_root() -> Result<PathBuf> {
     if let Some(root) = env_dir("GALDR_SKILLS_ROOT") {

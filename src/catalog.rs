@@ -1073,12 +1073,7 @@ fn analyze_skill_md(md: &str, rec_id: Option<&str>) -> SkillReadiness {
         score -= 20;
         notes.push("missing frontmatter description");
     }
-    let mut missing_sections = Vec::new();
-    for section in ["Goal", "Procedure", "Success criteria"] {
-        if !has_section(md, section) {
-            missing_sections.push(section);
-        }
-    }
+    let missing_sections = missing_procedural_sections(md);
     if !missing_sections.is_empty() {
         score -= 10 * missing_sections.len() as i64;
         notes.push("missing required sections");
@@ -1125,13 +1120,28 @@ pub fn infer_skill_status(md: &str) -> String {
     if md.contains("TODO(agent)") || md.contains("[galdr DRAFT]") {
         return STATUS_DRAFT.to_string();
     }
-    if has_section(md, "Goal")
-        && has_section(md, "Procedure")
-        && has_section(md, "Success criteria")
-    {
+    if missing_procedural_sections(md).is_empty() {
         return STATUS_FINAL.to_string();
     }
     STATUS_UNKNOWN.to_string()
+}
+
+/// The procedural sections a complete skill still lacks. A skill is complete under
+/// either anatomy: the open-standard / Codex shape galdr now emits
+/// (`When to use` / `Steps` / `Verification`) or the legacy trio
+/// (`Goal` / `Procedure` / `Success criteria`). A fully-present legacy skill counts
+/// as complete; otherwise the Codex sections are the ones reported missing.
+fn missing_procedural_sections(md: &str) -> Vec<&'static str> {
+    const CODEX: [&str; 3] = ["When to use", "Steps", "Verification"];
+    const LEGACY: [&str; 3] = ["Goal", "Procedure", "Success criteria"];
+    if LEGACY.iter().all(|s| has_section(md, s)) {
+        return Vec::new();
+    }
+    CODEX
+        .iter()
+        .copied()
+        .filter(|s| !has_section(md, s))
+        .collect()
 }
 
 fn has_frontmatter_name(md: &str) -> bool {

@@ -218,6 +218,49 @@ fn json_output_is_machine_readable() {
 }
 
 #[test]
+fn default_distill_produces_a_complete_usable_skill() {
+    // The "finished in one" bar: `galdr distill <id>` with no flags must install a
+    // complete, valid skill in the open-standard anatomy — no agent pass, no draft.
+    let sb = Sandbox::new();
+    let id = sb.record(
+        "deploy preview",
+        &[
+            BASH_STATUS,
+            r#"{"tool_name":"Write","tool_input":{"file_path":"/repo/out.txt"},"tool_response":{}}"#,
+        ],
+    );
+    assert!(sb.run(&["distill", &id]).status.success());
+
+    let skill = sb.skill_md("galdr-deploy-preview");
+    for section in ["## When to use", "## Inputs", "## Steps", "## Verification"] {
+        assert!(skill.contains(section), "missing {section}:\n{skill}");
+    }
+    assert!(!skill.contains("[galdr DRAFT]"));
+    assert!(!skill.contains("TODO(agent)"));
+    // It scores as a complete, ready skill — not a draft.
+    let listing = stdout(&sb.run(&["skills"]));
+    assert!(listing.contains("final"));
+    assert!(listing.contains("ready"));
+}
+
+#[test]
+fn setup_codex_check_and_print_work() {
+    let sb = Sandbox::new();
+    let missing = stdout(&sb.run(&["setup", "codex", "--check"]));
+    assert!(missing.contains("not found"));
+
+    let snippet = stdout(&sb.run(&["setup", "codex", "--print"]));
+    assert!(snippet.contains("PostToolUse"));
+    assert!(snippet.contains("galdr hook"));
+
+    let hooks = sb.home().join(".codex/hooks.json");
+    std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
+    std::fs::write(&hooks, snippet).unwrap();
+    let configured = stdout(&sb.run(&["setup", "codex", "--check"]));
+    assert!(configured.contains("is configured"));
+}
+
+#[test]
 fn distilled_skill_is_linked_into_installed_harnesses() {
     // The make-or-break for "R/R for Claude Code": a distilled skill must become
     // discoverable in the harness it was recorded in, not dead-end in the open
@@ -613,18 +656,23 @@ fn parametrize_marks_divergent_recordings_low_confidence() {
 }
 
 #[test]
-fn distill_auto_falls_back_to_the_draft_without_an_engine() {
+fn distill_auto_falls_back_to_a_complete_skill_without_an_engine() {
     let sb = Sandbox::new();
     let id = sb.record("auto demo", &[BASH_STATUS]);
 
-    // No MLX server and no Python mlx_lm: --auto must fall back and exit 0.
+    // No MLX server and no Python mlx_lm: --auto must fall back to a usable, complete
+    // skill (not a dead-end draft) and exit 0.
     let auto = sb.run(&["distill", &id, "--auto"]);
     assert!(
         auto.status.success(),
         "--auto must exit 0 even with no engine"
     );
-    let draft = sb.skill_md("galdr-auto-demo");
-    assert!(draft.contains("galdr-auto-demo"));
+    let skill = sb.skill_md("galdr-auto-demo");
+    assert!(skill.contains("galdr-auto-demo"));
+    // The fallback is complete: the open-standard anatomy, no draft markers.
+    assert!(skill.contains("## When to use"));
+    assert!(skill.contains("## Verification"));
+    assert!(!skill.contains("[galdr DRAFT]"));
 }
 
 #[test]
@@ -693,7 +741,9 @@ fn skills_catalog_reports_status_readiness_and_delta() {
     let sb = Sandbox::new();
     let id = sb.record("readiness", &[BASH_STATUS]);
 
-    assert!(sb.run(&["distill", &id]).status.success());
+    // The agent-assisted scaffolding path still exists behind --draft and scores
+    // lower (draft markers, missing refinement) before an agent finishes it.
+    assert!(sb.run(&["distill", &id, "--draft"]).status.success());
     let draft_listing = stdout(&sb.run(&["skills"]));
     assert!(draft_listing.contains("galdr-readiness"));
     assert!(draft_listing.contains("draft"));

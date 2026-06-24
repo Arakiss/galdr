@@ -1,15 +1,17 @@
 //! Distillation: span → `SKILL.md`.
 //!
-//! Two modes share one sanctioned writer ([`install_skill`]), so galdr stays the
+//! Every path shares one sanctioned writer ([`install_skill`]), so galdr stays the
 //! only thing that writes the skills directory:
 //!
-//! - **Phase 0 (agent-assisted):** no LLM. galdr normalizes the span and emits a
-//!   draft with an instruction block aimed at the agent, which finishes the fine
-//!   distillation by reading the span. No API key, no cost.
-//! - **Phase 1 (autonomous, `--auto`):** a local MLX engine writes the finished
-//!   `SKILL.md` from the span. The raw is wrapped in an untrusted-data delimiter,
-//!   the temperature is low, and the output is validated before install. If the
-//!   engine is unavailable it falls back cleanly to the Phase 0 draft.
+//! - **Default (complete):** no LLM. galdr renders a complete, valid skill straight
+//!   from the span in the open-standard anatomy (`When to use` / `Inputs` / `Steps`
+//!   / `Verification`) and installs it — usable immediately, no agent pass. This is
+//!   the "finished in one" path that matches what Codex Record & Replay hands you.
+//! - **`--draft` (agent-assisted):** galdr emits scaffolding with an instruction
+//!   block for an agent to finish by reading the span. Higher ceiling, needs a pass.
+//! - **`--auto` (autonomous):** a local MLX engine writes the finished `SKILL.md`
+//!   from the span (untrusted-data delimiter, low temperature, output validated). If
+//!   the engine is unavailable it falls back to the complete deterministic skill.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -22,14 +24,15 @@ use crate::span::Event;
 use crate::summary::{slugify, summarize_input};
 use crate::{catalog, paths, record, span};
 
-/// Distills recording `id`.
+/// Distills recording `id` into an installed skill.
 ///
-/// Without `from`, it emits the skill draft (scaffolding) by reading the span.
-/// With `from`, it installs as the final `SKILL.md` the content the agent already
-/// distilled into a file in an allowed working area. This second path exists so
-/// galdr is the **only** writer of the skills directory: the agent never touches
-/// it by hand.
-pub fn distill(id: &str, from: Option<&Path>) -> Result<()> {
+/// Default: deterministically render a **complete**, valid skill from the span and
+/// install it — usable immediately, no agent pass required (the "finished in one"
+/// path that matches what Codex Record & Replay hands you). With `draft`, write the
+/// scaffolding for an agent to refine instead. With `from`, install the `SKILL.md`
+/// the agent already prepared. In every case galdr is the only writer of the skills
+/// directory.
+pub fn distill(id: &str, from: Option<&Path>, draft: bool) -> Result<()> {
     let recording = load_recording(id)?;
     let skill_name = format!("galdr-{}", slugify(&recording.name));
     let skill_dir = paths::skill_dir(&skill_name)?;
@@ -42,7 +45,37 @@ pub fn distill(id: &str, from: Option<&Path>) -> Result<()> {
         return Ok(());
     }
 
-    write_draft(id, &skill_name, &skill_dir, &recording)
+    if draft {
+        return write_draft(id, &skill_name, &skill_dir, &recording);
+    }
+    write_complete(id, &skill_name, &skill_dir, &recording)
+}
+
+/// Renders a complete, valid skill from the span and installs it. No TODO markers,
+/// no agent pass: it is a real skill the moment it lands. An agent (or a later edit,
+/// or `--draft`) can still sharpen it, but it is usable as-is.
+fn write_complete(
+    id: &str,
+    skill_name: &str,
+    skill_dir: &Path,
+    recording: &record::Recording,
+) -> Result<()> {
+    let span_path = paths::span_file(id)?;
+    let events = span::read_span(&span_path)
+        .with_context(|| format!("could not read span {}", span_path.display()))?;
+
+    let content = render_complete_skill(skill_name, recording, &events, &span_path);
+    // The deterministic render must satisfy galdr's own validator — a guarantee that
+    // the default path never produces something it would reject from `--from`.
+    validate_skill_md(&content)
+        .context("internal: the complete distiller produced an invalid skill")?;
+    install_skill(skill_name, skill_dir, &content, id)?;
+
+    println!("Distilled {} step(s) into a complete skill.", events.len());
+    println!(
+        "Refine it any time: edit the SKILL.md, or `galdr distill {id} --draft` for an agent-assisted pass."
+    );
+    Ok(())
 }
 
 /// Writes the Phase 0 draft for the agent to finish.
@@ -75,8 +108,9 @@ fn write_draft(
 }
 
 /// Autonomous distillation: a local MLX engine writes the finished skill from the
-/// span. Falls back to the Phase 0 draft if the engine is unselected, missing, or
-/// unreachable, or if its output fails validation — always exiting cleanly.
+/// span. Falls back to the deterministic complete skill if the engine is unselected,
+/// missing, or unreachable, or if its output fails validation — so `--auto` without a
+/// model still installs a usable skill, never a dead-end draft. Always exits cleanly.
 pub fn distill_auto(id: &str, engine_override: Option<&str>) -> Result<()> {
     let recording = load_recording(id)?;
     let skill_name = format!("galdr-{}", slugify(&recording.name));
@@ -104,19 +138,21 @@ pub fn distill_auto(id: &str, engine_override: Option<&str>) -> Result<()> {
                         return Ok(());
                     }
                     Err(err) => {
-                        eprintln!("generated skill failed validation ({err}); writing the draft");
+                        eprintln!(
+                            "generated skill failed validation ({err}); writing a complete skill"
+                        );
                     }
                 },
-                Err(err) => eprintln!("engine error ({err}); writing the draft"),
+                Err(err) => eprintln!("engine error ({err}); writing a complete skill"),
             }
         } else {
-            eprintln!("autonomous engine not reachable; writing the Phase 0 draft");
+            eprintln!("autonomous engine not reachable; writing a complete skill");
         }
     } else {
-        eprintln!("no autonomous engine available; writing the Phase 0 draft");
+        eprintln!("no autonomous engine available; writing a complete skill");
     }
 
-    write_draft(id, &skill_name, &skill_dir, &recording)
+    write_complete(id, &skill_name, &skill_dir, &recording)
 }
 
 /// The single sanctioned writer of the skills directory, shared by `--from` and
@@ -291,10 +327,16 @@ pub fn validate_skill_md(skill_md: &str) -> Result<()> {
     {
         bail!("frontmatter missing `description`");
     }
-    for section in ["## Goal", "## Procedure", "## Success criteria"] {
-        if !skill_md.contains(section) {
-            bail!("missing `{section}` section");
-        }
+    // Accept either anatomy: the open-standard / Codex shape galdr now emits, or the
+    // legacy trio (so existing skills and agent-refined ones still validate).
+    let codex = ["## When to use", "## Steps", "## Verification"];
+    let legacy = ["## Goal", "## Procedure", "## Success criteria"];
+    let has_all = |set: &[&str]| set.iter().all(|s| skill_md.contains(s));
+    if !has_all(&codex) && !has_all(&legacy) {
+        bail!(
+            "missing required sections (need either `When to use` / `Steps` / `Verification`, \
+             or `Goal` / `Procedure` / `Success criteria`)"
+        );
     }
     if skill_md.contains("TODO(agent)") || skill_md.contains("[galdr DRAFT]") {
         bail!("contains unfinished draft markers");
@@ -334,6 +376,189 @@ fn load_recording(id: &str) -> Result<record::Recording> {
     let contents = std::fs::read_to_string(&rec_path)
         .with_context(|| format!("recording {id} not found. Did you run `galdr rec stop`?"))?;
     Ok(serde_json::from_str(&contents)?)
+}
+
+/// Composes a complete `SKILL.md` from the span, in the open-standard anatomy
+/// (`When to use` / `Inputs` / `Steps` / `Verification`) that Codex Record & Replay
+/// also uses. Deterministic and LLM-free: it generalizes what it safely can and
+/// surfaces the recording's concrete values as candidate inputs, since a single
+/// recording cannot know which values vary (that is what `galdr parametrize` is for).
+fn render_complete_skill(
+    skill_name: &str,
+    recording: &record::Recording,
+    events: &[Event],
+    span_path: &Path,
+) -> String {
+    let mut out = String::new();
+    let tools = distinct_tools(events);
+    let tools_phrase = if tools.is_empty() {
+        "no recorded tool calls".to_string()
+    } else {
+        tools.join(", ")
+    };
+
+    // Frontmatter. The description is the "when to use" the model matches on, so it
+    // names the task and the tools — and carries no draft marker.
+    let _ = writeln!(out, "---");
+    let _ = writeln!(out, "name: {skill_name}");
+    let _ = writeln!(
+        out,
+        "description: \"Reproduce the task \\\"{}\\\" ({} step{}: {}). Use this when you need to {}.\"",
+        recording.name,
+        events.len(),
+        if events.len() == 1 { "" } else { "s" },
+        tools_phrase,
+        recording.name.to_lowercase()
+    );
+    let _ = writeln!(out, "---");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "# {skill_name}");
+    let _ = writeln!(out);
+
+    // When to use.
+    let _ = writeln!(out, "## When to use");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "Use this skill to reproduce the recorded task **{}**. It runs {} step{} using {}. Adapt the inputs below to the situation in front of you, then follow the steps with judgment — this is a guide to interpret, not a macro to replay verbatim.",
+        recording.name,
+        events.len(),
+        if events.len() == 1 { "" } else { "s" },
+        tools_phrase
+    );
+    let _ = writeln!(out);
+
+    // Inputs — the recording's concrete values, offered as candidates.
+    let _ = writeln!(out, "## Inputs");
+    let _ = writeln!(out);
+    let inputs = notable_inputs(events);
+    if inputs.is_empty() {
+        let _ = writeln!(
+            out,
+            "This task took no obvious varying inputs; the steps are self-contained. Record it twice with `galdr` and run `galdr parametrize` to extract real parameters."
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "These values were specific to the recording. Replace them with the ones you need:"
+        );
+        for input in &inputs {
+            let _ = writeln!(out, "- `{}` — {}", input.value, input.role);
+        }
+    }
+    let _ = writeln!(out);
+
+    // Steps.
+    let _ = writeln!(out, "## Steps");
+    let _ = writeln!(out);
+    if events.is_empty() {
+        let _ = writeln!(out, "_(the recording captured no steps)_");
+    } else {
+        for event in events {
+            let summary = summarize_input(&event.tool_name, &event.tool_input);
+            let _ = writeln!(
+                out,
+                "{}. **{}** — {}",
+                event.seq + 1,
+                event.tool_name,
+                summary
+            );
+        }
+    }
+    let _ = writeln!(out);
+
+    // Verification.
+    let _ = writeln!(out, "## Verification");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "{}", verification_hint(events));
+    let _ = writeln!(out);
+
+    // Provenance.
+    let _ = writeln!(out, "## Provenance");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "- rec_id: `{}`", recording.rec_id);
+    let _ = writeln!(
+        out,
+        "- recorded: {} → {}",
+        recording.started_at, recording.ended_at
+    );
+    if let Some(cwd) = &recording.cwd {
+        let _ = writeln!(out, "- cwd: `{cwd}`");
+    }
+    let _ = writeln!(out, "- span (raw): `{}`", span_path.display());
+    let _ = writeln!(out);
+
+    out
+}
+
+/// The distinct tool names in the recording, in first-seen order.
+fn distinct_tools(events: &[Event]) -> Vec<String> {
+    let mut seen = Vec::new();
+    for event in events {
+        if !seen.contains(&event.tool_name) {
+            seen.push(event.tool_name.clone());
+        }
+    }
+    seen
+}
+
+/// One concrete value the recording used, with the role it played.
+struct NotableInput {
+    value: String,
+    role: String,
+}
+
+/// Pulls the recording's notable concrete values — file paths, URLs, queries — as
+/// candidate inputs. Deduplicated; capped so a long recording stays readable.
+fn notable_inputs(events: &[Event]) -> Vec<NotableInput> {
+    let mut inputs: Vec<NotableInput> = Vec::new();
+    let field = |event: &Event, key: &str| {
+        event
+            .tool_input
+            .get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    for event in events {
+        let step = event.seq + 1;
+        let candidate = match event.tool_name.as_str() {
+            "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => field(event, "file_path")
+                .map(|v| (v, format!("file at step {step} ({})", event.tool_name))),
+            "WebFetch" | "WebSearch" => field(event, "url")
+                .or_else(|| field(event, "query"))
+                .map(|v| (v, format!("web target at step {step}"))),
+            _ => None,
+        };
+        if let Some((value, role)) = candidate
+            && !value.is_empty()
+            && !inputs.iter().any(|i| i.value == value)
+        {
+            inputs.push(NotableInput { value, role });
+        }
+    }
+    inputs.truncate(12);
+    inputs
+}
+
+/// A verification line derived from the recording's last meaningful step.
+fn verification_hint(events: &[Event]) -> String {
+    let Some(last) = events.last() else {
+        return "Confirm the task completed as intended; the recording captured no steps to check."
+            .to_string();
+    };
+    match last.tool_name.as_str() {
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => last
+            .tool_input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(|p| format!("Confirm `{p}` exists and contains the intended changes."))
+            .unwrap_or_else(|| "Confirm the edited file holds the intended changes.".to_string()),
+        "Bash" => {
+            "Confirm the commands ran without error (exit 0) and produced the expected output."
+                .to_string()
+        }
+        _ => "Confirm the final step produced the intended result, and that each prior step succeeded.".to_string(),
+    }
 }
 
 /// Composes the content of the `SKILL.md` draft.

@@ -53,6 +53,39 @@ pub fn claude_hook_configured() -> Option<bool> {
         .ok()
 }
 
+pub fn codex_check() -> Result<()> {
+    let path = paths::codex_hooks()?;
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        println!("Codex hooks file not found: {}", path.display());
+        println!("Run `galdr setup codex --print` to see the hook snippet.");
+        return Ok(());
+    };
+    let configured = serde_json::from_str::<serde_json::Value>(&contents)
+        .map(|value| has_galdr_hook(&value))
+        .unwrap_or_else(|_| contents.contains("PostToolUse") && contents.contains("galdr hook"));
+    if configured {
+        println!("Codex PostToolUse hook is configured: {}", path.display());
+    } else {
+        println!("Codex PostToolUse hook is missing: {}", path.display());
+        println!("Run `galdr setup codex --print` and merge the snippet into hooks.json.");
+    }
+    Ok(())
+}
+
+pub fn codex_print() {
+    // Codex's hooks.json shares Claude Code's PostToolUse shape, so the same snippet
+    // applies — merge it into ~/.codex/hooks.json (hook arrays are concatenated).
+    println!("{CLAUDE_HOOK_SNIPPET}");
+}
+
+pub fn codex_hook_configured() -> Option<bool> {
+    let path = paths::codex_hooks().ok()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&contents)
+        .map(|value| has_galdr_hook(&value))
+        .ok()
+}
+
 fn has_galdr_hook(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(map) => {
