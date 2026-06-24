@@ -110,16 +110,21 @@ fn has_galdr_hook(value: &serde_json::Value) -> bool {
 /// which is the resilient form many users wire up. It must not be fooled by a
 /// neighbouring `galdr hooks` or `galdr outcome`.
 fn is_galdr_hook_command(command: &str) -> bool {
-    // Split on whitespace and shell separators, strip surrounding quotes, then look
-    // for a program token ending in `galdr` immediately followed by the `hook` arg.
-    let tokens: Vec<String> = command
-        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')'))
-        .map(|t| t.trim_matches(|c| c == '"' || c == '\'').to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-    tokens.windows(2).any(|pair| {
-        let prog = pair[0].as_str();
-        (prog == "galdr" || prog.ends_with("/galdr")) && pair[1] == "hook"
+    // Split on `;`, strip a leading `then `/`do ` from each shell segment, drop
+    // quotes, then match the `galdr hook` invocation. This recognizes the wrapped
+    // form without being fooled by `echo galdr hook` or a neighbouring `galdr hooks`.
+    command.split(';').any(|segment| {
+        let mut segment = segment.trim();
+        for prefix in ["then ", "do "] {
+            if let Some(stripped) = segment.strip_prefix(prefix) {
+                segment = stripped.trim();
+            }
+        }
+
+        let normalized = segment.replace(['"', '\''], "");
+        normalized == "galdr hook"
+            || normalized.starts_with("galdr hook ")
+            || normalized.ends_with("/galdr hook")
     })
 }
 
@@ -133,7 +138,11 @@ mod tests {
         assert!(is_galdr_hook_command(
             "/Users/dolores/.cargo/bin/galdr hook"
         ));
+        assert!(is_galdr_hook_command(
+            "if command -v galdr >/dev/null 2>&1; then galdr hook; elif [ -x \"$HOME/.cargo/bin/galdr\" ]; then \"$HOME/.cargo/bin/galdr\" hook; fi"
+        ));
         assert!(!is_galdr_hook_command("galdr outcome list"));
+        assert!(!is_galdr_hook_command("echo galdr hook"));
     }
 
     #[test]
