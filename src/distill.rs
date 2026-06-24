@@ -129,7 +129,46 @@ fn install_skill(skill_name: &str, skill_dir: &Path, content: &str, rec_id: &str
     println!("Skill installed at {}", skill_path.display());
 
     note_skill_written(skill_name, &skill_path, rec_id, catalog::STATUS_FINAL);
+    // A skill the harness can't find is useless: make the finished skill discoverable
+    // in every installed harness (Claude Code, Codex, Cursor) by linking it in.
+    report_discoverability(skill_name);
     Ok(())
+}
+
+/// Links the just-installed skill into each detected harness and prints where it
+/// is now discoverable. Best-effort: linking never blocks an install.
+fn report_discoverability(skill_name: &str) {
+    let Ok(results) = crate::link::link_skill(skill_name) else {
+        return;
+    };
+    let reached: Vec<&str> = results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                crate::link::LinkStatus::Linked
+                    | crate::link::LinkStatus::AlreadyLinked
+                    | crate::link::LinkStatus::SameRoot
+            )
+        })
+        .map(|r| r.harness.as_str())
+        .collect();
+    if !reached.is_empty() {
+        println!("Discoverable in: {}", reached.join(", "));
+    }
+    for r in &results {
+        if matches!(
+            r.status,
+            crate::link::LinkStatus::Conflict | crate::link::LinkStatus::Failed
+        ) {
+            eprintln!(
+                "warning: could not link into {} ({}): {}",
+                r.harness,
+                r.status.as_str(),
+                r.link_path
+            );
+        }
+    }
 }
 
 /// Warns before a write replaces an existing `SKILL.md`. If that file looked like a

@@ -35,6 +35,21 @@ pub fn parametrize(id_a: &str, id_b: &str, emit: bool) -> Result<()> {
     std::fs::write(&path, content)?;
     println!("Parametrized skill written to {}", path.display());
 
+    // Make it discoverable in every installed harness, like a distilled skill.
+    if let Ok(results) = crate::link::link_skill(&skill_name) {
+        let reached: Vec<&str> = results
+            .iter()
+            .filter(|r| {
+                r.status != crate::link::LinkStatus::Conflict
+                    && r.status != crate::link::LinkStatus::Failed
+            })
+            .map(|r| r.harness.as_str())
+            .collect();
+        if !reached.is_empty() {
+            println!("Discoverable in: {}", reached.join(", "));
+        }
+    }
+
     let skill_path = path.display().to_string();
     let installed_at = record::now_rfc3339();
     let _ = catalog::sync_installed_skill(

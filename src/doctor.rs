@@ -57,6 +57,7 @@ pub fn run() -> Result<()> {
             if draft_count > 0 {
                 println!("warn {draft_count} skill(s) are still drafts");
             }
+            report_discoverability(&skills);
         }
         Err(err) => {
             println!("err  catalog rebuild check failed: {err:#}");
@@ -81,6 +82,53 @@ pub fn run() -> Result<()> {
         Ok(())
     } else {
         bail!("doctor found {} actionable issue(s)", issues.len())
+    }
+}
+
+/// Reports whether galdr-distilled skills are discoverable by the installed
+/// harnesses. A skill the harness can't load is galdr failing at its one job, so
+/// this surfaces it (a warning, not an error: `galdr link` fixes it).
+fn report_discoverability(skills: &[catalog::SkillRow]) {
+    let galdr_skills: Vec<&catalog::SkillRow> = skills
+        .iter()
+        .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+        .collect();
+    if galdr_skills.is_empty() {
+        return;
+    }
+    let harnesses: Vec<crate::harness::HarnessInfo> = crate::harness::detect()
+        .into_iter()
+        .filter(|h| h.detected && crate::harness::skills_dir(&h.key).is_some())
+        .collect();
+    if harnesses.is_empty() {
+        return;
+    }
+    let mut unreachable = 0;
+    for skill in &galdr_skills {
+        for h in &harnesses {
+            if let Some(dir) = crate::harness::skills_dir(&h.key) {
+                let link = dir.join(&skill.skill_name);
+                // Same-root (the harness reads the canonical dir) counts as reachable.
+                let same_root = crate::paths::skills_root()
+                    .map(|r| dir == r)
+                    .unwrap_or(false);
+                if !same_root && !link.exists() {
+                    unreachable += 1;
+                    break;
+                }
+            }
+        }
+    }
+    if unreachable > 0 {
+        println!(
+            "warn {unreachable} galdr skill(s) are not discoverable by an installed harness; run `galdr link`"
+        );
+    } else {
+        println!(
+            "ok   {} galdr skill(s) discoverable across {} harness(es)",
+            galdr_skills.len(),
+            harnesses.len()
+        );
     }
 }
 

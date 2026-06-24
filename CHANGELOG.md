@@ -64,6 +64,15 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 
 ### Fixed
 
+- **Distilled skills are now discoverable by the harness they were recorded in.**
+  galdr installs a skill in the open-standard root (`~/.agents/skills`), but each
+  harness loads from its own directory — Claude Code from `~/.claude/skills`, Codex
+  from `~/.codex/skills`, Cursor from `~/.cursor/skills-cursor`. A skill that only
+  lived in the open-standard root was invisible to the harness, so galdr recorded and
+  distilled and then dead-ended at a file nothing loaded. Installing a skill now
+  symlinks it into every detected harness's skills directory (never clobbering a real
+  file of the same name), `galdr link` repairs discoverability in bulk, and
+  `galdr doctor` reports any galdr skill an installed harness can't see.
 - Recordings are now scoped to the session that started them. A single global
   `active` flag meant every concurrent agent session's hook wrote into the active
   recording, so a parallel session in another project leaked its tool calls — and

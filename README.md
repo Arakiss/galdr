@@ -85,6 +85,8 @@ galdr show <rec_id>          # inspect one recording with its steps
 galdr skills                 # list installed skills, galdr/external origin, provenance, and readiness
 galdr harnesses              # detect agent harnesses on this system and whether galdr's sensor is wired
 galdr harnesses --json       # the same, machine-readable
+galdr link                   # make distilled skills discoverable by every installed harness
+galdr link --skill <name>    # link just one skill
 galdr evaluations            # list skill evaluator outputs from the catalog
 galdr evaluations --skill <name>   # show one skill's evaluator history
 galdr outcome usage --skill <name> --rec <rec_id> --outcome success
@@ -199,6 +201,24 @@ cargo bin, that form works too and is recognized by `galdr doctor` / `setup clau
 if command -v galdr >/dev/null 2>&1; then galdr hook; \
 elif [ -x "$HOME/.cargo/bin/galdr" ]; then "$HOME/.cargo/bin/galdr" hook; fi
 ```
+
+## Multi-harness: one skill, every harness
+
+galdr distills a skill once, into the open-standard skills root (`~/.agents/skills`),
+then makes it discoverable in **every harness installed on the machine**. Each harness
+loads skills from its own directory, so galdr links the canonical skill into each one:
+
+| Harness | Skills directory | Sensor wiring |
+|---|---|---|
+| Claude Code | `~/.claude/skills` | `~/.claude/settings.json` PostToolUse hook |
+| Codex | `~/.codex/skills` | `~/.codex/hooks.json` (same hook shape) |
+| Cursor | `~/.cursor/skills-cursor` | — |
+
+The link is a symlink back to the canonical copy (the same mechanism a hand-linked
+skill already uses), created on install, never clobbering a real file of the same
+name. `galdr harnesses` shows what's installed; `galdr link` (re)links every skill;
+`galdr doctor` flags any galdr skill a harness can't see. The result: record a task in
+one harness, get a reusable skill in all of them.
 
 ## On-disk layout
 

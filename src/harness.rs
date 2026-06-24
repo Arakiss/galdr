@@ -28,6 +28,9 @@ pub struct HarnessInfo {
     /// Whether galdr's hook is wired into this harness. `Some` only where galdr
     /// knows how to wire one (today: Claude Code); `None` elsewhere.
     pub galdr_hook: Option<bool>,
+    /// The directory this harness loads skills from, if galdr knows it and it
+    /// exists. A distilled skill must be reachable here to be usable.
+    pub skills_dir: Option<String>,
     /// Short human note (e.g. hook status).
     pub notes: String,
 }
@@ -37,45 +40,55 @@ struct Known {
     key: &'static str,
     config: &'static str,
     bin: &'static str,
+    /// Where this harness loads user skills from, relative to `$HOME`. `None`
+    /// when galdr does not yet know the harness's skills location.
+    skills_subdir: Option<&'static str>,
 }
 
 /// The harnesses galdr knows how to recognize. Ordered by how common they are.
+/// `skills_subdir` is verified against on-disk layout, not assumed.
 const KNOWN: &[Known] = &[
     Known {
         name: "Claude Code",
         key: "claude",
         config: ".claude",
         bin: "claude",
+        skills_subdir: Some(".claude/skills"),
     },
     Known {
         name: "Codex",
         key: "codex",
         config: ".codex",
         bin: "codex",
+        skills_subdir: Some(".codex/skills"),
     },
     Known {
         name: "Cursor",
         key: "cursor",
         config: ".cursor",
         bin: "cursor",
+        skills_subdir: Some(".cursor/skills-cursor"),
     },
     Known {
         name: "Gemini CLI",
         key: "gemini",
         config: ".gemini",
         bin: "gemini",
+        skills_subdir: None,
     },
     Known {
         name: "Aider",
         key: "aider",
         config: ".aider.conf.yml",
         bin: "aider",
+        skills_subdir: None,
     },
     Known {
         name: "Windsurf",
         key: "windsurf",
         config: ".windsurf",
         bin: "windsurf",
+        skills_subdir: None,
     },
 ];
 
@@ -83,6 +96,14 @@ const KNOWN: &[Known] = &[
 pub fn detect() -> Vec<HarnessInfo> {
     let home = BaseDirs::new().map(|b| b.home_dir().to_path_buf());
     KNOWN.iter().map(|k| info_for(k, home.as_ref())).collect()
+}
+
+/// Where a detected harness loads skills from, if galdr knows it. Used to make a
+/// distilled skill discoverable across every installed harness.
+pub fn skills_dir(key: &str) -> Option<PathBuf> {
+    let home = BaseDirs::new()?.home_dir().to_path_buf();
+    let known = KNOWN.iter().find(|k| k.key == key)?;
+    known.skills_subdir.map(|sub| home.join(sub))
 }
 
 fn info_for(k: &Known, home: Option<&PathBuf>) -> HarnessInfo {
@@ -96,6 +117,11 @@ fn info_for(k: &Known, home: Option<&PathBuf>) -> HarnessInfo {
     } else {
         None
     };
+    let skills_dir = home
+        .zip(k.skills_subdir)
+        .map(|(h, sub)| h.join(sub))
+        .filter(|p| p.exists())
+        .map(|p| p.display().to_string());
     let detected = config_dir.is_some() || on_path;
     let notes = match galdr_hook {
         Some(true) => "galdr sensor wired".to_string(),
@@ -109,6 +135,7 @@ fn info_for(k: &Known, home: Option<&PathBuf>) -> HarnessInfo {
         config_dir,
         on_path,
         galdr_hook,
+        skills_dir,
         notes,
     }
 }

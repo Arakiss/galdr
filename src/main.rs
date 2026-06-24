@@ -16,6 +16,7 @@ mod ext;
 mod harness;
 mod hook;
 mod ipc;
+mod link;
 mod outcome;
 mod parametrize;
 mod paths;
@@ -96,6 +97,20 @@ enum Commands {
 
     /// Detect the agent harnesses installed on this system.
     Harnesses {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Make distilled skills discoverable by every installed harness.
+    ///
+    /// galdr installs a skill once in the open-standard root; this links it into
+    /// each detected harness's skills directory (Claude Code, Codex, Cursor) so the
+    /// harness it was recorded in can actually load it.
+    Link {
+        /// Link only this skill (default: every galdr-installed skill).
+        #[arg(long)]
+        skill: Option<String>,
         /// Emit machine-readable JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -305,6 +320,7 @@ fn main() {
         Commands::Show { id, json } => exit_on_error(cmd_show(&id, json)),
         Commands::Skills { json } => exit_on_error(cmd_skills(json)),
         Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
+        Commands::Link { skill, json } => exit_on_error(cmd_link(skill.as_deref(), json)),
         Commands::Evaluations { skill, json } => {
             exit_on_error(cmd_evaluations(skill.as_deref(), json))
         }
@@ -479,6 +495,38 @@ fn cmd_harnesses(json: bool) -> anyhow::Result<()> {
             format!("  ({})", detail.join(" · "))
         };
         println!("{mark} {:<13} {state}{detail}", h.name);
+    }
+    Ok(())
+}
+
+fn cmd_link(skill: Option<&str>, json: bool) -> anyhow::Result<()> {
+    let results = match skill {
+        Some(name) => link::link_skill(name)?,
+        None => link::link_all()?,
+    };
+    if json {
+        return print_json(&results);
+    }
+    if results.is_empty() {
+        println!(
+            "No skills to link, or no harness with a known skills directory is installed.\n\
+             Distill a skill first (`galdr distill <id>`), then run `galdr link`."
+        );
+        return Ok(());
+    }
+    for r in &results {
+        let mark = match r.status {
+            link::LinkStatus::Linked | link::LinkStatus::AlreadyLinked => "✓",
+            link::LinkStatus::SameRoot => "·",
+            link::LinkStatus::Conflict | link::LinkStatus::Failed => "!",
+        };
+        println!(
+            "{mark} {:<24} → {:<12} {}  ({})",
+            r.skill,
+            r.harness,
+            r.status.as_str(),
+            r.link_path
+        );
     }
     Ok(())
 }

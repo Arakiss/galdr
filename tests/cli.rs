@@ -218,6 +218,97 @@ fn json_output_is_machine_readable() {
 }
 
 #[test]
+fn distilled_skill_is_linked_into_installed_harnesses() {
+    // The make-or-break for "R/R for Claude Code": a distilled skill must become
+    // discoverable in the harness it was recorded in, not dead-end in the open
+    // standard root the harness never reads.
+    let sb = Sandbox::new();
+    // Stand up a Claude Code skills dir so the harness is "installed" and known.
+    std::fs::create_dir_all(sb.home().join(".claude/skills")).unwrap();
+
+    let id = sb.record("link task", &[BASH_STATUS]);
+    let refined = sb.home().join("r.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-link-task\ndescription: \"link\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // The skill is now reachable through the Claude Code skills directory.
+    let linked = sb.home().join(".claude/skills/galdr-link-task/SKILL.md");
+    assert!(
+        linked.exists(),
+        "the distilled skill must be discoverable in ~/.claude/skills"
+    );
+    // And it resolves back to the canonical open-standard copy.
+    let canonical = sb.home().join(".agents/skills/galdr-link-task/SKILL.md");
+    assert!(canonical.exists());
+}
+
+#[test]
+fn link_never_clobbers_a_real_skill_already_in_the_harness() {
+    let sb = Sandbox::new();
+    // A user's own, hand-authored skill of the same name already lives in Claude Code.
+    let existing = sb.home().join(".claude/skills/galdr-keepme");
+    std::fs::create_dir_all(&existing).unwrap();
+    std::fs::write(existing.join("SKILL.md"), "real user content").unwrap();
+
+    let id = sb.record("keepme", &[BASH_STATUS]);
+    let refined = sb.home().join("r.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-keepme\ndescription: \"x\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // The user's real file is untouched (not replaced by a symlink).
+    let content =
+        std::fs::read_to_string(sb.home().join(".claude/skills/galdr-keepme/SKILL.md")).unwrap();
+    assert_eq!(content, "real user content");
+    assert!(
+        !sb.home()
+            .join(".claude/skills/galdr-keepme")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+
+    // `galdr link --json` reports the conflict rather than silently failing.
+    let out = sb.run(&["link", "--skill", "galdr-keepme", "--json"]);
+    let results: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        results
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["harness"] == "Claude Code" && r["status"] == "conflict")
+    );
+}
+
+#[test]
 fn sensor_never_breaks_the_session() {
     let sb = Sandbox::new();
 
