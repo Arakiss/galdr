@@ -557,6 +557,15 @@ fn notable_inputs(events: &[Event]) -> Vec<NotableInput> {
             "WebFetch" | "WebSearch" => field(event, "url")
                 .or_else(|| field(event, "query"))
                 .map(|v| (v, format!("web target at step {step}"))),
+            // Computer Use: the text *typed* into the GUI is what varies between runs
+            // — surface it as a candidate input, not coordinates or keystrokes.
+            name if crate::summary::is_computer_use(name)
+                && field(event, "action").as_deref() == Some("type") =>
+            {
+                field(event, "text")
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|v| (v, format!("text typed at step {step}")))
+            }
             _ => None,
         };
         if let Some((value, role)) = candidate

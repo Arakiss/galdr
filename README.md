@@ -46,7 +46,9 @@ any other step. The only thing out of scope is capturing a *human's* manual gest
 in a browser the agent never touched; that would need a separate pixel/DOM capture
 layer and contradicts the "tool calls, not pixels" thesis, so it stays out of the core
 (a roadmap item, and a job for the extension seam if ever). Sold honestly: this is
-Record & Replay *for what your agent does* — including its web automation.
+Record & Replay *for what your agent does* — including its web automation and the GUI
+work it drives through Computer Use (those actions are tool calls too; galdr keeps the
+action and drops the screenshot).
 
 ## How it works
 
@@ -268,13 +270,21 @@ length limit.
   "capture": {
     "deny_tools": ["SecretTool"],
     "deny_cwd_prefixes": ["/private/project"],
-    "max_response_chars": 4000
+    "max_response_chars": 4000,
+    "strip_screenshots": true
   }
 }
 ```
 
 The policy only applies to new events as the hook records them. It never edits spans
 that already exist.
+
+`strip_screenshots` (on by default) drops base64 image blobs — a Computer Use
+screenshot, an image content block — from the recorded event, keeping the *action*
+(click, type, key) but not the pixels. The pixels are large and may show sensitive
+on-screen content, and they are never the reusable signal; the action is. This is what
+lets galdr record a GUI task the agent drives via Computer Use and distill it into a
+clean, semantic skill — the agent's GUI work is just more tool calls.
 
 ## Extension points
 

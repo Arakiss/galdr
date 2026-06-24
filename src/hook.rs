@@ -87,6 +87,12 @@ pub fn run() -> Result<()> {
     if denied_by_capture_policy(&event, &capture) {
         return Ok(());
     }
+    // Drop screenshot/base64 blobs before anything else so the span stores the
+    // action, never the pixels (smaller, and no on-screen content leaks).
+    if capture.strip_screenshots {
+        strip_screenshots(&mut event.tool_input);
+        strip_screenshots(&mut event.tool_response);
+    }
     apply_response_cap(&mut event, capture.max_response_chars);
 
     // Permission seam: the core allows everything; an external layer may veto.
@@ -198,6 +204,51 @@ fn denied_by_capture_policy(event: &span::Event, capture: &config::CaptureConfig
     false
 }
 
+/// Recursively replaces base64 image data with a small marker, in place. Targets the
+/// standard image content block (`{"type":"image","source":{"data":"…"}}`), any
+/// `data` field holding a long base64 string, and any very long base64-looking
+/// string anywhere — which is what a Computer Use screenshot looks like. The action
+/// fields (`action`, `coordinate`, `text`, …) are untouched.
+fn strip_screenshots(value: &mut serde_json::Value) {
+    const DATA_MIN: usize = 1024; // a `data` field this long is a blob, not content
+    const ANY_MIN: usize = 100_000; // any string this long is certainly a blob
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                let is_blob = v.as_str().is_some_and(|s| {
+                    (key == "data" && s.len() >= DATA_MIN && looks_base64(s))
+                        || (s.len() >= ANY_MIN && looks_base64(s))
+                });
+                if is_blob {
+                    let bytes = v.as_str().map(str::len).unwrap_or(0);
+                    *v = serde_json::json!(format!("[galdr stripped screenshot: {bytes} bytes]"));
+                } else {
+                    strip_screenshots(v);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                strip_screenshots(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// A cheap base64 check: the string is non-trivial and made (almost) entirely of the
+/// base64 alphabet. Good enough to tell an image blob from prose without decoding.
+fn looks_base64(s: &str) -> bool {
+    if s.len() < 64 {
+        return false;
+    }
+    let ok = s
+        .bytes()
+        .filter(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b'\n' | b'\r'))
+        .count();
+    ok as f64 / s.len() as f64 > 0.95
+}
+
 fn apply_response_cap(event: &mut span::Event, max_chars: Option<usize>) {
     let Some(max_chars) = max_chars else {
         return;
@@ -218,6 +269,37 @@ fn apply_response_cap(event: &mut span::Event, max_chars: Option<usize>) {
 mod tests {
     use super::*;
     use crate::record::ActiveRec;
+
+    #[test]
+    fn strips_a_base64_screenshot_but_keeps_the_action() {
+        let big = "iVBORw0KGgoAAAANSUhEUg".repeat(100); // long base64-looking blob
+        let mut response = serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": "image/png", "data": big }
+        });
+        let mut input = serde_json::json!({ "action": "screenshot" });
+        strip_screenshots(&mut response);
+        strip_screenshots(&mut input);
+        // The pixels are gone, replaced by a marker.
+        let data = response["source"]["data"].as_str().unwrap();
+        assert!(data.contains("stripped screenshot"), "{data}");
+        assert!(!data.contains("iVBORw0KGgo"));
+        // The action is untouched.
+        assert_eq!(input["action"], "screenshot");
+    }
+
+    #[test]
+    fn strip_leaves_short_data_and_prose_alone() {
+        // A short `data` value (e.g. a small payload) and ordinary prose are kept.
+        let mut v = serde_json::json!({
+            "data": "ok",
+            "command": "git status",
+            "note": "a normal sentence with spaces, not base64"
+        });
+        let before = v.clone();
+        strip_screenshots(&mut v);
+        assert_eq!(v, before);
+    }
 
     fn active(origin: Option<&str>, bound: Option<&str>) -> ActiveRec {
         ActiveRec {
