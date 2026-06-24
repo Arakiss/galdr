@@ -59,7 +59,7 @@ jobs:
           # healing anyway — the next push to main runs this step again — but the
           # retry avoids a needless one-cycle delay.
           branch=""
-          for attempt in 1 2 3; do
+          for _ in 1 2 3; do
             branch="$(gh pr list --repo "${GITHUB_REPOSITORY}" \
               --label 'autorelease: pending' --state open \
               --json headRefName --jq '.[0].headRefName // empty')"
