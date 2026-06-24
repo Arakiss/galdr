@@ -323,6 +323,13 @@ fn cmd_rec_status() -> anyhow::Result<()> {
     println!("  rec_id: {}", active.rec_id);
     println!("  started_at: {}", active.started_at);
     println!("  steps: {steps}");
+    if let Some(origin) = &active.origin_cwd {
+        println!("  origin_cwd: {origin}");
+    }
+    match &active.bound_session {
+        Some(session) => println!("  bound_session: {session}"),
+        None => println!("  bound_session: (unbound — first matching event will bind)"),
+    }
     println!("  span: {}", span_path.display());
     if let Some(transcript_path) = active.transcript_path {
         println!("  transcript: {transcript_path}");

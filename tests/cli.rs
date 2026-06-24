@@ -151,6 +151,58 @@ fn sensor_never_breaks_the_session() {
 }
 
 #[test]
+fn recording_scopes_to_the_session_that_started_it() {
+    // A single global `active` flag means every concurrent agent session's hook
+    // sees this recording. The sensor must bind to the starting session and refuse
+    // events from another session, so a parallel session in another project cannot
+    // leak its tool calls into this span.
+    let sb = Sandbox::new();
+    assert!(sb.run(&["rec", "start", "scoped"]).status.success());
+    let id = sb.active_rec_id();
+
+    // First event carrying a session id binds the recording (no cwd → binds).
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Bash","tool_input":{"command":"mine-1"},"tool_response":{},"session_id":"mine"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+    // A different session's event, in another directory, must be dropped.
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Bash","tool_input":{"command":"leak"},"tool_response":{},"session_id":"other","cwd":"/elsewhere"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+    // The bound session keeps recording.
+    assert!(
+        sb.hook(
+            r#"{"tool_name":"Read","tool_input":{"file_path":"/x"},"tool_response":{},"session_id":"mine"}"#,
+            false,
+        )
+        .status
+        .success()
+    );
+
+    assert_eq!(
+        sb.span_lines(&id),
+        2,
+        "only the bound session's events record"
+    );
+    let span = std::fs::read_to_string(sb.home().join(".galdr/spans").join(format!("{id}.jsonl")))
+        .unwrap();
+    assert!(
+        !span.contains("leak"),
+        "the foreign session's command must not leak in: {span}"
+    );
+    assert!(!span.contains("\"other\""));
+}
+
+#[test]
 fn record_list_show_work_without_a_daemon() {
     let sb = Sandbox::new();
     let id = sb.record(

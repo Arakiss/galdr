@@ -51,6 +51,12 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 
 ### Fixed
 
+- Recordings are now scoped to the session that started them. A single global
+  `active` flag meant every concurrent agent session's hook wrote into the active
+  recording, so a parallel session in another project leaked its tool calls — and
+  their payloads — into the span. The sensor now binds the recording to the first
+  session whose event lands under the directory where `rec start` ran, and records
+  only that session; `rec status` shows the `origin_cwd` and the `bound_session`.
 - `galdr doctor` and `galdr setup claude --check` recognize a `galdr hook` invocation
   wrapped in a shell conditional (the resilient PATH-with-cargo-bin-fallback form),
   instead of reporting a correctly-wired hook as missing.
