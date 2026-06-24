@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     permissions:
+      actions: write # dispatch ci.yml on the release PR + the binary build on the tag
       contents: write
       pull-requests: write
     steps:
@@ -36,6 +37,31 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
+      # Run the required status checks on the release PR. A PR that
+      # release-please opens with GITHUB_TOKEN never starts the `pull_request`
+      # CI run — GitHub blocks token-created events from triggering workflows to
+      # avoid recursion. With no checks, branch protection makes the release PR
+      # unmergeable, forcing an admin override to merge it; that path stopped
+      # release-please from recognizing the merge and creating the release (it
+      # logged "Found pull request #N" then "Expected 1 releases, only found 0"),
+      # so every tag had to be cut by hand. Dispatching ci.yml on the release
+      # PR's head makes the same checks report on it, so it merges through the
+      # normal flow and release-please auto-tags. (Pattern taken from the gommage
+      # release workflow.)
+      - name: Run CI on the open release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="$(gh pr list --repo "${GITHUB_REPOSITORY}" \
+            --label 'autorelease: pending' --state open \
+            --json headRefName --jq '.[0].headRefName // empty')"
+          if [[ -z "${branch}" ]]; then
+            echo "No open release PR; nothing to dispatch."
+            exit 0
+          fi
+          echo "Dispatching ci.yml for release PR branch ${branch}"
+          gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${branch}"
       - name: Trigger binary build
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
