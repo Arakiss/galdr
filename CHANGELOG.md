@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.3.0](https://github.com/Arakiss/galdr/compare/v0.2.0...v0.3.0) (2026-06-24)
+
+
+### Features
+
+* **cli:** add skill signal catalog and operator workflows ([f308651](https://github.com/Arakiss/galdr/commit/f30865187270fd76d76fbad030b89fc7d7ee4764))
+* multi-harness record and replay, finished-in-one, self-skill ([a51862d](https://github.com/Arakiss/galdr/commit/a51862d9c5495840a4ff222c396af84333e4cf1b))
+
+
+### Bug fixes
+
+* **doctor:** treat legacy skill provenance as a warning ([c7683db](https://github.com/Arakiss/galdr/commit/c7683db28de1935849ee60b32647b6dee98047cf))
+* recognize guarded Claude hook wiring ([2157fb4](https://github.com/Arakiss/galdr/commit/2157fb4f17da6af8b816c52e70bd827b7d023c33))
+* **security:** harden sensor, redaction, loopback, paths, and daemon ([7ff4a21](https://github.com/Arakiss/galdr/commit/7ff4a213fa2f49733cfea39450a75e85d66188c4))
+* **setup:** detect absolute galdr hook commands ([455c2c1](https://github.com/Arakiss/galdr/commit/455c2c1eb679a8bd0f8c49287eac57aafa7c6ccb))
+
+
+### Documentation
+
+* add code of conduct, expand contributing, add CI badge ([48a75a8](https://github.com/Arakiss/galdr/commit/48a75a878d988b699088dfe6b88f20c03b01f868))
+* document readiness metrics and outcome capture ([3e520a7](https://github.com/Arakiss/galdr/commit/3e520a7d17390020539a04b3f8caa0d2ff94dcb1))
+
 ## [Unreleased]
 
 ### Added
