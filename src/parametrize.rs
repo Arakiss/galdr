@@ -29,6 +29,12 @@ pub fn parametrize(id_a: &str, id_b: &str, emit: bool) -> Result<()> {
     let skill_name = format!("galdr-{}-param", slugify(&report.name_a));
     let content = render_param_skill(&report, &skill_name);
 
+    // A parametrized skill is a draft (it carries DRAFT/TODO markers a human finishes),
+    // so the gate skips Practicality — but it still keeps the full Security axis, since
+    // the emitted file is one a human is about to open and an agent may later read.
+    let ctx = crate::validate::ValidationCtx::new(true, false);
+    crate::distill::gate_or_bail(&content, &ctx)?;
+
     let dir = paths::skill_dir(&skill_name)?;
     paths::ensure_not_symlinked(&dir)?;
     std::fs::create_dir_all(&dir)?;
@@ -293,6 +299,33 @@ mod tests {
 
         assert!(skill.contains("⚠ LOW-CONFIDENCE"));
         assert!(skill.contains("## Alignment notes"));
+    }
+
+    #[test]
+    fn parametrize_output_passes_gate() {
+        // The emitted parametrized skill is a draft (DRAFT/TODO markers), so the gate
+        // skips Practicality but keeps Security: with non-personal values it installs.
+        let a = vec![
+            ev(0, "Bash", serde_json::json!({ "command": "git status" })),
+            ev(
+                1,
+                "Write",
+                serde_json::json!({ "file_path": "/repo/out.md" }),
+            ),
+        ];
+        let b = vec![
+            ev(0, "Bash", serde_json::json!({ "command": "git status" })),
+            ev(
+                1,
+                "Write",
+                serde_json::json!({ "file_path": "/other/out.md" }),
+            ),
+        ];
+        let report = analyze("ship", &a, "ship", &b);
+        let skill = render_param_skill(&report, "galdr-ship-param");
+        let ctx = crate::validate::ValidationCtx::new(true, false);
+        let v = crate::validate::validate_skill(&skill, &ctx);
+        assert!(!v.has_blocking(false), "{v}\n{skill}");
     }
 
     #[test]
