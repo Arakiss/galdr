@@ -30,6 +30,7 @@ jobs:
       actions: write # dispatch ci.yml on the release PR + the binary build on the tag
       contents: write
       pull-requests: write
+      statuses: write
     steps:
       - id: release
         uses: googleapis/release-please-action@v5
@@ -37,41 +38,143 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
-      # Run the required status checks on the release PR. A PR that
-      # release-please opens with GITHUB_TOKEN never starts the `pull_request`
-      # CI run — GitHub blocks token-created events from triggering workflows to
-      # avoid recursion. With no checks, branch protection makes the release PR
-      # unmergeable, forcing an admin override to merge it; that path stopped
-      # release-please from recognizing the merge and creating the release (it
-      # logged "Found pull request #N" then "Expected 1 releases, only found 0"),
-      # so every tag had to be cut by hand. Dispatching ci.yml on the release
-      # PR's head makes the same checks report on it, so it merges through the
-      # normal flow and release-please auto-tags. (Pattern taken from the gommage
-      # release workflow.)
+      # Release PRs opened by GITHUB_TOKEN cannot start `pull_request` CI, and
+      # `workflow_dispatch` check-runs stay detached from the PR rollup. Run CI
+      # explicitly, verify the jobs, then mirror the required contexts as commit
+      # statuses from this GitHub Actions job so branch protection can see them.
       - name: Run CI on the open release PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          required_contexts=(
+            "rustfmt"
+            "clippy (default)"
+            "clippy (mlx)"
+            "cargo-deny"
+            "commitlint"
+            "test (ubuntu-latest / default)"
+            "test (ubuntu-latest / mlx)"
+            "test (macos-latest / default)"
+            "test (macos-latest / mlx)"
+          )
+
+          publish_status() {
+            local context="$1"
+            local state="$2"
+            local description="$3"
+            local target_url="${4:-}"
+            local args=(
+              "repos/${GITHUB_REPOSITORY}/statuses/${sha}"
+              -f "state=${state}"
+              -f "context=${context}"
+              -f "description=${description}"
+            )
+            if [[ -n "${target_url}" ]]; then
+              args+=(-f "target_url=${target_url}")
+            fi
+            gh api "${args[@]}" >/dev/null
+          }
+
           # The PR that release-please just opened can lag a few seconds behind
           # this read (GitHub API read-after-write is only eventually
           # consistent), so retry briefly before giving up. A miss is self-
           # healing anyway — the next push to main runs this step again — but the
           # retry avoids a needless one-cycle delay.
-          branch=""
+          pr_info=""
           for _ in 1 2 3; do
-            branch="$(gh pr list --repo "${GITHUB_REPOSITORY}" \
+            # shellcheck disable=SC2016 # $pr is a jq variable.
+            pr_info="$(gh pr list --repo "${GITHUB_REPOSITORY}" \
               --label 'autorelease: pending' --state open \
-              --json headRefName --jq '.[0].headRefName // empty')"
-            [[ -n "${branch}" ]] && break
+              --json number,headRefName,headRefOid,baseRefName,headRepositoryOwner,author \
+              --jq '(map(select(.baseRefName == "main" and .headRefName == "release-please--branches--main" and .author.login == "app/github-actions" and .headRepositoryOwner.login == env.GITHUB_REPOSITORY_OWNER)) | .[0]) as $pr | if $pr == null then empty else [$pr.number, $pr.headRefName, $pr.headRefOid] | @tsv end')"
+            [[ -n "${pr_info}" ]] && break
             sleep 5
           done
-          if [[ -z "${branch}" ]]; then
+          if [[ -z "${pr_info}" ]]; then
             echo "No open release PR; nothing to dispatch."
             exit 0
           fi
+
+          IFS=$'\t' read -r pr_number branch sha <<< "${pr_info}"
+          for context in "${required_contexts[@]}"; do
+            publish_status "${context}" pending "Waiting for release PR CI dispatch"
+          done
+
           echo "Dispatching ci.yml for release PR branch ${branch}"
+          dispatch_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run ci.yml --repo "${GITHUB_REPOSITORY}" --ref "${branch}"
+
+          run_id=""
+          run_url=""
+          run_status=""
+          run_conclusion=""
+          for _ in {1..180}; do
+            run_json="$(gh run list --repo "${GITHUB_REPOSITORY}" \
+              --workflow ci.yml --branch "${branch}" --event workflow_dispatch \
+              --limit 10 --json databaseId,headSha,status,conclusion,url,createdAt \
+              --jq "map(select(.headSha == \"${sha}\" and .createdAt >= \"${dispatch_started}\")) | sort_by(.createdAt) | reverse | .[0] // empty")"
+            if [[ -n "${run_json}" ]]; then
+              run_id="$(jq -r '.databaseId' <<< "${run_json}")"
+              run_url="$(jq -r '.url' <<< "${run_json}")"
+              run_status="$(jq -r '.status' <<< "${run_json}")"
+              run_conclusion="$(jq -r '.conclusion // empty' <<< "${run_json}")"
+              [[ "${run_status}" == "completed" ]] && break
+            fi
+            sleep 10
+          done
+
+          if [[ -z "${run_id}" ]]; then
+            for context in "${required_contexts[@]}"; do
+              publish_status "${context}" error "Release PR CI dispatch did not start"
+            done
+            exit 1
+          fi
+          if [[ "${run_status}" != "completed" ]]; then
+            for context in "${required_contexts[@]}"; do
+              publish_status "${context}" error "Release PR CI dispatch timed out" "${run_url}"
+            done
+            exit 1
+          fi
+
+          jobs_json="$(gh run view "${run_id}" --repo "${GITHUB_REPOSITORY}" --json jobs --jq '.jobs')"
+          failed=0
+          for context in "${required_contexts[@]}"; do
+            job_conclusion="$(jq -r --arg name "${context}" '[.[] | select(.name == $name) | .conclusion] | last // empty' <<< "${jobs_json}")"
+            case "${job_conclusion}" in
+              success)
+                publish_status "${context}" success "Passed in release PR CI dispatch" "${run_url}"
+                ;;
+              skipped)
+                if [[ "${context}" == "commitlint" ]]; then
+                  publish_status "${context}" success "Skipped in release PR CI dispatch" "${run_url}"
+                else
+                  publish_status "${context}" error "Unexpected skipped job in release PR CI" "${run_url}"
+                  failed=1
+                fi
+                ;;
+              failure|cancelled|timed_out|action_required)
+                publish_status "${context}" failure "Failed in release PR CI dispatch" "${run_url}"
+                failed=1
+                ;;
+              "")
+                publish_status "${context}" error "Missing job in release PR CI dispatch" "${run_url}"
+                failed=1
+                ;;
+              *)
+                publish_status "${context}" error "Unexpected ${job_conclusion} in release PR CI" "${run_url}"
+                failed=1
+                ;;
+            esac
+          done
+
+          if [[ "${run_conclusion}" != "success" || "${failed}" != "0" ]]; then
+            echo "::error::Release PR CI did not pass cleanly: ${run_url}"
+            exit 1
+          fi
+
+          echo "Release PR #${pr_number} CI passed and required statuses were published."
       - name: Trigger binary build
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
