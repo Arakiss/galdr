@@ -39,11 +39,14 @@ call, its input, and its result. galdr records that substrate. The replay is not
 pixel re-enactment — it is a skill the agent reads and applies with judgment.
 
 **The honest scope.** galdr records what *your agent* did, not what *you* did by hand
-outside it. It does not capture human GUI gestures (clicks in a browser you drive
-manually) — that is a deliberate boundary, not an oversight (a roadmap item below).
-The half galdr does cover — "the agent already did this task well once; crystallize
-it into a reusable skill" — is the one that fits a coding harness, and arguably the
-more useful one. Sold honestly: this is Record & Replay *for what your agent does*.
+outside it. Note this is narrower than it sounds: when the agent drives a browser
+through a tool — a Playwright/Chrome MCP server, a browser tool — those clicks, types,
+and navigations **are** tool calls, so galdr already captures and distills them like
+any other step. The only thing out of scope is capturing a *human's* manual gestures
+in a browser the agent never touched; that would need a separate pixel/DOM capture
+layer and contradicts the "tool calls, not pixels" thesis, so it stays out of the core
+(a roadmap item, and a job for the extension seam if ever). Sold honestly: this is
+Record & Replay *for what your agent does* — including its web automation.
 
 ## How it works
 
@@ -331,9 +334,11 @@ Phase 2 (shipped):
 
 Next:
 
-- **Capture of human GUI gestures** — the deliberate scope gap above. Recording what you
-  do by hand (not just what the agent did) needs a browser/desktop capture layer on top of
-  the span model; it is the one axis where Codex's pixel recorder does something galdr does not.
+- **Capture of human GUI gestures** — the deliberate scope gap above. The agent's *own*
+  browser automation is already captured (it arrives as tool calls). What's missing is
+  recording a *human* driving a browser by hand, which needs a separate pixel/DOM capture
+  layer on top of the span model — the one axis where Codex's pixel recorder does something
+  galdr does not, and a job for the extension seam rather than the core.
 - Verify the Codex sensor end to end with a live Codex recording (the wiring is in place;
   the stdin payload is not yet confirmed field-for-field).
 - A multi-agent broker over the same span model.

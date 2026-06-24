@@ -82,16 +82,59 @@ pub(crate) fn summarize_input(tool_name: &str, input: &serde_json::Value) -> Str
         _ => None,
     };
 
-    let raw = raw.unwrap_or_else(|| match input {
-        serde_json::Value::Object(map) => {
-            let keys: Vec<&str> = map.keys().map(String::as_str).collect();
-            format!("fields: {}", keys.join(", "))
-        }
-        serde_json::Value::Null => "(no input)".to_string(),
-        other => other.to_string(),
-    });
+    let raw = raw.unwrap_or_else(|| describe_unknown(input));
 
     truncate(&raw, 160)
+}
+
+/// Summarizes a tool call galdr has no special case for — most importantly the MCP
+/// and browser tools an agent drives (`mcp__playwright__browser_click`, …). Their
+/// web actions are already captured as plain tool calls; this just renders the
+/// informative value (url, selector, text…) instead of a bare list of field names,
+/// so a recorded browser session reads like steps, not like JSON keys.
+fn describe_unknown(input: &serde_json::Value) -> String {
+    let serde_json::Value::Object(map) = input else {
+        return match input {
+            serde_json::Value::Null => "(no input)".to_string(),
+            other => other.to_string(),
+        };
+    };
+    // The fields most likely to carry the meaning, in priority order.
+    const INFORMATIVE: &[&str] = &[
+        "url",
+        "selector",
+        "text",
+        "query",
+        "path",
+        "file_path",
+        "command",
+        "name",
+        "message",
+        "body",
+        "content",
+        "pattern",
+        "value",
+        "key",
+    ];
+    let mut shown: Vec<String> = Vec::new();
+    for key in INFORMATIVE {
+        if let Some(value) = map.get(*key).and_then(|v| v.as_str())
+            && !value.trim().is_empty()
+        {
+            shown.push(format!("{key}={value}"));
+            if shown.len() == 2 {
+                break;
+            }
+        }
+    }
+    if shown.is_empty() {
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        format!("fields: {}", keys.join(", "))
+    } else {
+        // A middle dot survives `truncate`'s whitespace collapse, unlike a run of
+        // spaces, so the two values stay visually separated.
+        shown.join(" · ")
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +190,26 @@ mod tests {
         assert_eq!(
             summarize_input("Unknown", &serde_json::json!({ "a": 1, "b": 2 })),
             "fields: a, b"
+        );
+    }
+
+    #[test]
+    fn summarize_renders_browser_and_mcp_tool_values() {
+        // An agent's browser tool calls are captured as plain tool calls; the
+        // summary should show the informative value, not just the field names.
+        assert_eq!(
+            summarize_input(
+                "mcp__playwright__browser_navigate",
+                &serde_json::json!({ "url": "https://app.example.com/expenses" })
+            ),
+            "url=https://app.example.com/expenses"
+        );
+        assert_eq!(
+            summarize_input(
+                "mcp__playwright__browser_type",
+                &serde_json::json!({ "selector": "#amount", "text": "42.50" })
+            ),
+            "selector=#amount · text=42.50"
         );
     }
 }
