@@ -79,7 +79,7 @@ pub(crate) fn summarize_input(tool_name: &str, input: &serde_json::Value) -> Str
                 .unwrap_or(p)
         }),
         "WebFetch" | "WebSearch" => field("url").or_else(|| field("query")),
-        name if is_computer_use(name) => Some(describe_computer_use(input)),
+        name if is_computer_use(name) => Some(describe_computer_use(name, input)),
         _ => None,
     };
 
@@ -95,32 +95,97 @@ pub(crate) fn is_computer_use(tool_name: &str) -> bool {
     t == "computer" || t.contains("computer_use") || t.contains("computer-use")
 }
 
-/// Renders a Computer Use action on one line — `click (812,344)`, `type "42.50"`,
-/// `key cmd+s`, `screenshot` — so a recorded GUI session reads like steps the agent
-/// took, not a wall of coordinates and base64. The pixels themselves are never the
-/// reusable signal; the action is.
-fn describe_computer_use(input: &serde_json::Value) -> String {
+/// Renders a Computer Use action on one line — `left_click (812,344)`, `type "42.50"`,
+/// `key "cmd+s"`, `screenshot`, `open_application "Calculator"` — so a recorded GUI
+/// session reads like the steps the agent took, not a wall of coordinates and base64.
+/// The pixels themselves are never the reusable signal; the action is.
+///
+/// Two shapes exist in the wild and both are handled:
+/// - the **classic single tool** `computer`, where the verb is an `action` field
+///   (`{action:"left_click", coordinate:[x,y]}`);
+/// - the **per-action MCP server** (`mcp__computer-use__left_click`,
+///   `…__screenshot`, `…__open_application`, `…__computer_batch`), where the verb is
+///   the tool-name suffix and a `computer_batch` carries an `actions` array.
+fn describe_computer_use(tool_name: &str, input: &serde_json::Value) -> String {
     let serde_json::Value::Object(map) = input else {
-        return "computer action".to_string();
+        return action_verb_from_name(tool_name).to_string();
     };
-    let str_field = |k: &str| map.get(k).and_then(|v| v.as_str());
-    let action = str_field("action").unwrap_or("action");
+    // The classic tool names the verb in an `action` field; the per-action server
+    // names it in the tool itself (the suffix after the last `__`).
+    let verb = map
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| action_verb_from_name(tool_name));
 
-    // Coordinate may be [x, y] or {x, y}.
-    let coord = map.get("coordinate").and_then(|c| match c {
+    // A batch is a sequence of sub-actions; render the sequence so the GUI skill
+    // reads as the steps taken, not an opaque "batch".
+    if let Some(actions) = map.get("actions").and_then(|v| v.as_array()) {
+        let parts: Vec<String> = actions
+            .iter()
+            .filter_map(|a| {
+                let m = a.as_object()?;
+                let sub = m.get("action").and_then(|v| v.as_str()).unwrap_or("action");
+                Some(render_action(sub, m))
+            })
+            .collect();
+        if !parts.is_empty() {
+            return format!("{verb} ×{}: {}", parts.len(), parts.join(", "));
+        }
+    }
+
+    render_action(verb, map)
+}
+
+/// The action verb encoded in a Computer Use tool name: the suffix after the last
+/// `__` (`mcp__computer-use__left_click` → `left_click`), or the whole name for a
+/// bare tool (`computer` → `computer`).
+fn action_verb_from_name(tool_name: &str) -> &str {
+    tool_name.rsplit("__").next().unwrap_or(tool_name)
+}
+
+/// Renders one Computer Use action (`verb (x,y)` / `verb "text"` / `verb "app"` /
+/// `verb`) from its verb and the object carrying its parameters. Shared by the
+/// top-level call and each sub-action of a `computer_batch`.
+fn render_action(verb: &str, map: &serde_json::Map<String, serde_json::Value>) -> String {
+    let str_of = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|k| map.get(*k).and_then(|v| v.as_str()))
+    };
+
+    // Coordinate-bearing actions: clicks, moves, drags, scroll.
+    if let Some(coord) = coordinate_str(map) {
+        if let Some(dir) = str_of(&["scroll_direction"]) {
+            return format!("{verb} {dir} {coord}");
+        }
+        return format!("{verb} {coord}");
+    }
+    // Text/key-bearing actions: type, key, hold_key.
+    if let Some(text) = str_of(&["text", "key"]) {
+        return format!("{verb} \"{text}\"");
+    }
+    // App-bearing actions: open_application, switch_display.
+    if let Some(app) = str_of(&["app", "application", "bundleId", "name"]) {
+        return format!("{verb} \"{app}\"");
+    }
+    // request_access takes an `apps` array of names.
+    if let Some(apps) = map.get("apps").and_then(|v| v.as_array()) {
+        let names: Vec<&str> = apps.iter().filter_map(|v| v.as_str()).collect();
+        if !names.is_empty() {
+            return format!("{verb} \"{}\"", names.join(", "));
+        }
+    }
+    verb.to_string()
+}
+
+/// Formats a `coordinate` value as `(x,y)`. Accepts both `[x, y]` and `{x, y}`.
+fn coordinate_str(map: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    match map.get("coordinate")? {
         serde_json::Value::Array(a) if a.len() == 2 => Some(format!("({},{})", a[0], a[1])),
         serde_json::Value::Object(o) => match (o.get("x"), o.get("y")) {
             (Some(x), Some(y)) => Some(format!("({x},{y})")),
             _ => None,
         },
         _ => None,
-    });
-    let text = str_field("text").or_else(|| str_field("key"));
-
-    match (coord, text) {
-        (Some(c), _) => format!("{action} {c}"),
-        (None, Some(t)) => format!("{action} \"{t}\""),
-        (None, None) => action.to_string(),
     }
 }
 
@@ -235,6 +300,7 @@ mod tests {
         assert!(is_computer_use("mcp__computer-use__computer"));
         assert!(is_computer_use("computer"));
         assert!(!is_computer_use("Bash"));
+        // Classic single `computer` tool: the verb is in an `action` field.
         assert_eq!(
             summarize_input(
                 "mcp__computer-use__computer",
@@ -253,6 +319,58 @@ mod tests {
             summarize_input("computer", &serde_json::json!({ "action": "screenshot" })),
             "screenshot"
         );
+    }
+
+    #[test]
+    fn summarize_renders_per_action_computer_use_server() {
+        // The real `computer-use` MCP server uses one tool per action: the verb is
+        // the tool-name suffix, and the parameters sit at the top level.
+        assert_eq!(
+            summarize_input("mcp__computer-use__screenshot", &serde_json::json!({})),
+            "screenshot"
+        );
+        assert_eq!(
+            summarize_input(
+                "mcp__computer-use__left_click",
+                &serde_json::json!({ "coordinate": [398, 339] })
+            ),
+            "left_click (398,339)"
+        );
+        assert_eq!(
+            summarize_input(
+                "mcp__computer-use__open_application",
+                &serde_json::json!({ "app": "Calculadora" })
+            ),
+            "open_application \"Calculadora\""
+        );
+        assert_eq!(
+            summarize_input(
+                "mcp__computer-use__request_access",
+                &serde_json::json!({ "apps": ["Calculadora"], "reason": "demo" })
+            ),
+            "request_access \"Calculadora\""
+        );
+        assert_eq!(
+            summarize_input(
+                "mcp__computer-use__type",
+                &serde_json::json!({ "text": "42" })
+            ),
+            "type \"42\""
+        );
+    }
+
+    #[test]
+    fn summarize_renders_a_computer_batch_as_its_sequence() {
+        let summary = summarize_input(
+            "mcp__computer-use__computer_batch",
+            &serde_json::json!({ "actions": [
+                { "action": "left_click", "coordinate": [398, 339] },
+                { "action": "left_click", "coordinate": [372, 388] },
+            ] }),
+        );
+        assert!(summary.starts_with("computer_batch ×2:"), "{summary}");
+        assert!(summary.contains("left_click (398,339)"), "{summary}");
+        assert!(summary.contains("left_click (372,388)"), "{summary}");
     }
 
     #[test]
