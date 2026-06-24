@@ -4,20 +4,43 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 
 use super::data::Catalog;
-use crate::catalog::{RecordingDetail, RecordingRow, SkillRow};
-use crate::distill;
-use crate::span::Event;
+use crate::catalog::{self, RecordingDetail, RecordingRow, SkillRow};
+use crate::harness::{self, HarnessInfo};
+use crate::{distill, record};
 
-/// How many rows a PageUp/PageDown moves.
 const PAGE: usize = 10;
-/// How many lines a PageUp/PageDown scrolls inside an overlay.
 const OVERLAY_PAGE: u16 = 12;
 
+/// The top-level tabs.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
+pub enum Tab {
+    Overview,
     Recordings,
-    Detail,
-    Audit,
+    Skills,
+    Harnesses,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Recordings, Tab::Skills, Tab::Harnesses];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Tab::Overview => "Overview",
+            Tab::Recordings => "Recordings",
+            Tab::Skills => "Skills",
+            Tab::Harnesses => "Harnesses",
+        }
+    }
+
+    fn index(self) -> usize {
+        Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
+    }
+
+    fn cycle(self, delta: isize) -> Tab {
+        let len = Tab::ALL.len() as isize;
+        let next = (self.index() as isize + delta).rem_euclid(len) as usize;
+        Tab::ALL[next]
+    }
 }
 
 /// A modal overlay drawn over the current screen.
@@ -32,28 +55,31 @@ pub enum Overlay {
 
 pub struct App<C: Catalog> {
     pub catalog: C,
-    pub screen: Screen,
-    /// Every recording, newest first (the unfiltered source of truth).
+    pub tab: Tab,
+    /// True while the inspector (a recording's steps) is open over the Recordings tab.
+    pub in_detail: bool,
+
     pub recordings: Vec<RecordingRow>,
-    /// Every skill (the unfiltered source of truth).
     pub skills: Vec<SkillRow>,
-    /// Filtered projections actually shown and navigated; recomputed by [`Self::reproject`].
+    pub harnesses: Vec<HarnessInfo>,
+    /// Filtered/sorted projections actually shown; recomputed by [`Self::reproject`].
     pub rec_view: Vec<RecordingRow>,
     pub skill_view: Vec<SkillRow>,
+
     pub rec_state: TableState,
-    pub audit_state: TableState,
+    pub skill_state: TableState,
+    pub harness_state: TableState,
     pub detail: Option<RecordingDetail>,
-    pub raw: Vec<Event>,
+    pub raw: Vec<crate::span::Event>,
     pub detail_state: TableState,
+
     pub overlay: Option<Overlay>,
-    /// Vertical scroll offset for the active overlay.
     pub overlay_scroll: u16,
-    /// Substring filter applied to the recordings and audit lists.
     pub filter: String,
-    /// True while the user is typing into the filter.
     pub filter_mode: bool,
-    /// Whether a recording is currently being captured (shown in the title).
+
     pub recording_active: bool,
+    pub active_name: Option<String>,
     pub status: String,
     pub should_quit: bool,
 }
@@ -64,13 +90,16 @@ impl<C: Catalog> App<C> {
         let skills = catalog.skills();
         let mut app = Self {
             catalog,
-            screen: Screen::Recordings,
+            tab: Tab::Overview,
+            in_detail: false,
             rec_view: recordings.clone(),
             skill_view: skills.clone(),
             recordings,
             skills,
+            harnesses: harness::detect(),
             rec_state: TableState::default(),
-            audit_state: TableState::default(),
+            skill_state: TableState::default(),
+            harness_state: TableState::default(),
             detail: None,
             raw: Vec::new(),
             detail_state: TableState::default(),
@@ -78,8 +107,8 @@ impl<C: Catalog> App<C> {
             overlay_scroll: 0,
             filter: String::new(),
             filter_mode: false,
-            // Set live from the event loop; default false keeps `new` pure for tests.
             recording_active: false,
+            active_name: None,
             status: String::new(),
             should_quit: false,
         };
@@ -87,7 +116,21 @@ impl<C: Catalog> App<C> {
         app
     }
 
-    /// Recomputes the filtered views from `filter` and keeps each selection valid.
+    /// Number of galdr-distilled skills (vs external ones from other harnesses).
+    pub fn galdr_skill_count(&self) -> usize {
+        self.skills
+            .iter()
+            .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+            .count()
+    }
+
+    pub fn distilled_count(&self) -> usize {
+        self.recordings.iter().filter(|r| r.distilled).count()
+    }
+
+    /// Recomputes the filtered views and keeps every selection valid. Skills are
+    /// sorted galdr-first so a human sees their own distilled skills before the
+    /// external ones that merely share the directory.
     pub fn reproject(&mut self) {
         let needle = self.filter.to_lowercase();
         let matches = |hay: &str| needle.is_empty() || hay.to_lowercase().contains(&needle);
@@ -97,14 +140,23 @@ impl<C: Catalog> App<C> {
             .filter(|r| matches(&r.name) || matches(&r.rec_id))
             .cloned()
             .collect();
-        self.skill_view = self
+        let mut skills: Vec<SkillRow> = self
             .skills
             .iter()
             .filter(|s| matches(&s.skill_name) || s.rec_id.as_deref().is_some_and(matches))
             .cloned()
             .collect();
+        skills.sort_by(|a, b| {
+            let a_ext = a.origin != catalog::ORIGIN_GALDR;
+            let b_ext = b.origin != catalog::ORIGIN_GALDR;
+            a_ext
+                .cmp(&b_ext)
+                .then_with(|| a.skill_name.cmp(&b.skill_name))
+        });
+        self.skill_view = skills;
         clamp_selection(&mut self.rec_state, self.rec_view.len());
-        clamp_selection(&mut self.audit_state, self.skill_view.len());
+        clamp_selection(&mut self.skill_state, self.skill_view.len());
+        clamp_selection(&mut self.harness_state, self.harnesses.len());
     }
 
     pub fn selected_recording(&self) -> Option<&RecordingRow> {
@@ -113,22 +165,45 @@ impl<C: Catalog> App<C> {
 
     pub fn on_key(&mut self, key: KeyEvent) {
         if self.filter_mode {
-            self.on_key_filter(key);
-            return;
+            return self.on_key_filter(key);
         }
         if self.overlay.is_some() {
-            self.on_key_overlay(key);
-            return;
+            return self.on_key_overlay(key);
         }
-        match self.screen {
-            Screen::Recordings => self.on_key_recordings(key),
-            Screen::Detail => self.on_key_detail(key),
-            Screen::Audit => self.on_key_audit(key),
+        // Global keys available on every tab.
+        match key.code {
+            KeyCode::Char('q') => {
+                self.should_quit = true;
+                return;
+            }
+            KeyCode::Char('?') => return self.open_overlay(Overlay::Help),
+            KeyCode::Tab => return self.switch_tab(self.tab.cycle(1)),
+            KeyCode::BackTab => return self.switch_tab(self.tab.cycle(-1)),
+            KeyCode::Char(c @ '1'..='4') => {
+                let idx = c as usize - '1' as usize;
+                return self.switch_tab(Tab::ALL[idx]);
+            }
+            _ => {}
+        }
+        if self.tab == Tab::Recordings && self.in_detail {
+            return self.on_key_detail(key);
+        }
+        match self.tab {
+            Tab::Overview => self.on_key_overview(key),
+            Tab::Recordings => self.on_key_recordings(key),
+            Tab::Skills => self.on_key_skills(key),
+            Tab::Harnesses => self.on_key_harnesses(key),
         }
     }
 
-    /// Filter input: printable chars extend the needle, Backspace trims it, Enter
-    /// keeps it and leaves input mode, Esc abandons and clears it.
+    fn switch_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+        self.in_detail = false;
+        self.status.clear();
+        // A filter is meaningful only on the list tabs; keep it but it simply has
+        // no effect elsewhere.
+    }
+
     fn on_key_filter(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => self.filter_mode = false,
@@ -162,7 +237,7 @@ impl<C: Catalog> App<C> {
                 self.overlay_scroll = self.overlay_scroll.saturating_sub(1)
             }
             KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.overlay_scroll = self.overlay_scroll.saturating_add(OVERLAY_PAGE);
+                self.overlay_scroll = self.overlay_scroll.saturating_add(OVERLAY_PAGE)
             }
             KeyCode::PageUp => {
                 self.overlay_scroll = self.overlay_scroll.saturating_sub(OVERLAY_PAGE)
@@ -172,10 +247,18 @@ impl<C: Catalog> App<C> {
         }
     }
 
+    fn on_key_overview(&mut self, key: KeyEvent) {
+        // The overview is a dashboard; Enter jumps into Recordings to act.
+        if matches!(
+            key.code,
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
+        ) {
+            self.switch_tab(Tab::Recordings);
+        }
+    }
+
     fn on_key_recordings(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('?') => self.open_overlay(Overlay::Help),
             KeyCode::Char('/') => self.filter_mode = true,
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
@@ -191,8 +274,7 @@ impl<C: Catalog> App<C> {
             }
             KeyCode::PageDown => page(&mut self.rec_state, self.rec_view.len(), PAGE as isize),
             KeyCode::PageUp => page(&mut self.rec_state, self.rec_view.len(), -(PAGE as isize)),
-            KeyCode::Enter => self.open_detail(),
-            KeyCode::Char('a') => self.open_audit(),
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.open_detail(),
             KeyCode::Char('d') => self.distill_selected(),
             KeyCode::Char('o') => self.show_span_path(),
             KeyCode::Char('r') => self.open_overlay(Overlay::Replay),
@@ -203,10 +285,8 @@ impl<C: Catalog> App<C> {
     fn on_key_detail(&mut self, key: KeyEvent) {
         let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('?') => self.open_overlay(Overlay::Help),
             KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
-                self.screen = Screen::Recordings;
+                self.in_detail = false;
                 self.detail = None;
                 self.raw.clear();
                 self.status.clear();
@@ -227,34 +307,49 @@ impl<C: Catalog> App<C> {
         }
     }
 
-    fn on_key_audit(&mut self, key: KeyEvent) {
+    fn on_key_skills(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') => self.should_quit = true,
-            KeyCode::Char('?') => self.open_overlay(Overlay::Help),
             KeyCode::Char('/') => self.filter_mode = true,
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
                 self.reproject();
             }
-            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => self.screen = Screen::Recordings,
             KeyCode::Char('j') | KeyCode::Down => {
-                step(&mut self.audit_state, self.skill_view.len(), 1)
+                step(&mut self.skill_state, self.skill_view.len(), 1)
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                step(&mut self.audit_state, self.skill_view.len(), -1)
+                step(&mut self.skill_state, self.skill_view.len(), -1)
             }
             KeyCode::Char('g') | KeyCode::Home => {
-                jump(&mut self.audit_state, self.skill_view.len(), true)
+                jump(&mut self.skill_state, self.skill_view.len(), true)
             }
             KeyCode::Char('G') | KeyCode::End => {
-                jump(&mut self.audit_state, self.skill_view.len(), false)
+                jump(&mut self.skill_state, self.skill_view.len(), false)
             }
-            KeyCode::PageDown => page(&mut self.audit_state, self.skill_view.len(), PAGE as isize),
+            KeyCode::PageDown => page(&mut self.skill_state, self.skill_view.len(), PAGE as isize),
             KeyCode::PageUp => page(
-                &mut self.audit_state,
+                &mut self.skill_state,
                 self.skill_view.len(),
                 -(PAGE as isize),
             ),
+            _ => {}
+        }
+    }
+
+    fn on_key_harnesses(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                step(&mut self.harness_state, self.harnesses.len(), 1)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                step(&mut self.harness_state, self.harnesses.len(), -1)
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                jump(&mut self.harness_state, self.harnesses.len(), true)
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                jump(&mut self.harness_state, self.harnesses.len(), false)
+            }
             _ => {}
         }
     }
@@ -275,18 +370,11 @@ impl<C: Catalog> App<C> {
         if self.detail.as_ref().is_some_and(|d| !d.steps.is_empty()) {
             self.detail_state.select(Some(0));
         }
-        self.screen = Screen::Detail;
+        self.in_detail = true;
     }
 
-    fn open_audit(&mut self) {
-        if self.audit_state.selected().is_none() && !self.skill_view.is_empty() {
-            self.audit_state.select(Some(0));
-        }
-        self.screen = Screen::Audit;
-    }
-
-    /// Distills a draft for the selected recording. galdr stays the only writer of
-    /// the skills directory — this calls the sanctioned `distill` path.
+    /// Distills a draft for the selected recording through the sanctioned path —
+    /// galdr stays the only writer of the skills directory.
     fn distill_selected(&mut self) {
         let Some(rec) = self.selected_recording() else {
             return;
@@ -295,7 +383,7 @@ impl<C: Catalog> App<C> {
         match distill::distill(&id, None) {
             Ok(()) => {
                 self.status = format!(
-                    "draft written for {id} — refine it, then `galdr distill {id} --from <file>`"
+                    "draft written for {id} — refine, then `galdr distill {id} --from <file>`"
                 );
                 let _ = self.catalog.refresh();
                 self.recordings = self.catalog.recordings();
@@ -307,9 +395,10 @@ impl<C: Catalog> App<C> {
     }
 
     fn show_span_path(&mut self) {
-        let id = match self.screen {
-            Screen::Detail => self.detail.as_ref().map(|d| d.recording.rec_id.clone()),
-            _ => self.selected_recording().map(|r| r.rec_id.clone()),
+        let id = if self.in_detail {
+            self.detail.as_ref().map(|d| d.recording.rec_id.clone())
+        } else {
+            self.selected_recording().map(|r| r.rec_id.clone())
         };
         if let Some(id) = id
             && let Ok(path) = crate::paths::span_file(&id)
@@ -317,29 +406,39 @@ impl<C: Catalog> App<C> {
             self.status = format!("span: {}", path.display());
         }
     }
+
+    /// Re-reads the active-recording flag (called from the event loop) so the title
+    /// REC badge stays live.
+    pub fn refresh_active(&mut self) {
+        match record::read_active() {
+            Some(active) => {
+                self.recording_active = true;
+                self.active_name = Some(active.name);
+            }
+            None => {
+                self.recording_active = false;
+                self.active_name = None;
+            }
+        }
+    }
 }
 
-/// Moves a table selection by `delta`, wrapping around the ends.
 fn step(state: &mut TableState, len: usize, delta: isize) {
     if len == 0 {
         return;
     }
     let cur = state.selected().unwrap_or(0) as isize;
-    let next = (cur + delta).rem_euclid(len as isize) as usize;
-    state.select(Some(next));
+    state.select(Some((cur + delta).rem_euclid(len as isize) as usize));
 }
 
-/// Moves a table selection by `delta`, clamped to the ends (no wrap) — for paging.
 fn page(state: &mut TableState, len: usize, delta: isize) {
     if len == 0 {
         return;
     }
     let cur = state.selected().unwrap_or(0) as isize;
-    let next = (cur + delta).clamp(0, len as isize - 1) as usize;
-    state.select(Some(next));
+    state.select(Some((cur + delta).clamp(0, len as isize - 1) as usize));
 }
 
-/// Jumps to the first (`top`) or last row.
 fn jump(state: &mut TableState, len: usize, top: bool) {
     if len == 0 {
         return;
@@ -347,12 +446,10 @@ fn jump(state: &mut TableState, len: usize, top: bool) {
     state.select(Some(if top { 0 } else { len - 1 }));
 }
 
-/// Keeps a selection in range after the underlying list shrinks (e.g. a filter).
 fn clamp_selection(state: &mut TableState, len: usize) {
     if len == 0 {
         state.select(None);
     } else {
-        let cur = state.selected().unwrap_or(0).min(len - 1);
-        state.select(Some(cur));
+        state.select(Some(state.selected().unwrap_or(0).min(len - 1)));
     }
 }
