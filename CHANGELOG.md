@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.4.0](https://github.com/Arakiss/galdr/compare/v0.3.0...v0.4.0) (2026-06-24)
+
+
+### Features
+
+* **hook:** capture Computer Use actions, drop screenshots ([#8](https://github.com/Arakiss/galdr/issues/8)) ([bf8a9ba](https://github.com/Arakiss/galdr/commit/bf8a9ba56e5db096ca77d1d9d4a9238effd8014d))
+
 ## [0.3.0](https://github.com/Arakiss/galdr/compare/v0.2.0...v0.3.0) (2026-06-24)
 
 
