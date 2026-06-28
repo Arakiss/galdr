@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.5.1](https://github.com/Arakiss/galdr/compare/v0.5.0...v0.5.1) (2026-06-28)
+
+
+### Bug fixes
+
+* harden the record→distill→replay loop (control-cmd noise, diff filtering, keyed secrets) ([#21](https://github.com/Arakiss/galdr/issues/21)) ([e1325f3](https://github.com/Arakiss/galdr/commit/e1325f348cbcbe5a2200ce20426def1282044e8b))
+
 ## [0.5.0](https://github.com/Arakiss/galdr/compare/v0.4.1...v0.5.0) (2026-06-24)
 
 
