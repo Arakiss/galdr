@@ -132,18 +132,7 @@ fn redact_value(value: &mut serde_json::Value) {
 }
 
 fn is_sensitive_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    [
-        "password",
-        "passwd",
-        "token",
-        "secret",
-        "api_key",
-        "apikey",
-        "authorization",
-    ]
-    .iter()
-    .any(|needle| key.contains(needle))
+    name_is_sensitive(key)
 }
 
 /// Well-known secret token shapes. Conservative on purpose: every prefix here is a
@@ -190,6 +179,22 @@ pub(crate) fn redact_secrets_in_text(text: &str) -> Option<String> {
         // Recurse to also catch token-shaped secrets in the remaining text.
         return Some(redact_secrets_in_text(&pem_free).unwrap_or(pem_free));
     }
+    // First a `name=value` / `name: value` pass: a credential whose *name* is
+    // sensitive (an AWS secret access key, a `password=…`) has no recognizable token
+    // prefix, so only the key name gives it away. Then the token-prefix pass over the
+    // result, so both nets apply.
+    let keyed = redact_keyed_secrets(text);
+    let base = keyed.as_deref().unwrap_or(text);
+    match redact_prefixed_secrets(base) {
+        Some(redacted) => Some(redacted),
+        None => keyed,
+    }
+}
+
+/// The token-prefix net: replaces any delimiter-separated token that matches a known
+/// secret shape (`sk-`, `ghp_`, a JWT header, …) with `[REDACTED]`. Returns `None`
+/// when nothing matched, so a caller can skip the allocation.
+fn redact_prefixed_secrets(text: &str) -> Option<String> {
     if !text
         .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '=' | ':' | ',' | '(' | ')'))
         .any(looks_like_secret)
@@ -225,6 +230,92 @@ fn looks_like_secret(token: &str) -> bool {
     SECRET_PREFIXES
         .iter()
         .any(|prefix| token.starts_with(prefix))
+}
+
+/// Substrings that mark a credential by its *name*, for the `name=value` /
+/// `name: value` pass. Specific on purpose — no bare `key` (which would match
+/// `keyboard`/`monkey`) — so a sensitive name is a strong, low-false-positive signal.
+const SENSITIVE_KEY_NEEDLES: &[&str] = &[
+    "password",
+    "passwd",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "authorization",
+    "credential",
+    "access_key",
+    "private_key",
+    "client_secret",
+];
+
+/// Whether a credential *name* (the left side of an assignment, or a JSON key) is
+/// sensitive.
+fn name_is_sensitive(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    SENSITIVE_KEY_NEEDLES
+        .iter()
+        .any(|needle| name.contains(needle))
+}
+
+/// Redacts the value of a `name=value` or `name: value` assignment when `name` is
+/// sensitive, whatever the value's shape. This is the net for a credential with no
+/// recognizable prefix — the canonical case is an AWS secret access key
+/// (`AWS_SECRET_ACCESS_KEY=wJalr…`), which `looks_like_secret` cannot match. It fires
+/// only behind a sensitive name and only for a substantial value (≥ 8 chars), so a
+/// boolean or a short flag is left alone. Returns `None` when nothing matched.
+fn redact_keyed_secrets(text: &str) -> Option<String> {
+    const MIN_VALUE: usize = 8;
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let mut out: Vec<String> = Vec::with_capacity(words.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < words.len() {
+        let word = words[i];
+        // `name=value` / `name:value` inside one word.
+        if let Some((key, sep, value)) = split_assignment(word)
+            && name_is_sensitive(key)
+            && value_is_substantial(value, MIN_VALUE)
+        {
+            out.push(format!("{key}{sep}[REDACTED]"));
+            changed = true;
+            i += 1;
+            continue;
+        }
+        // `name:` / `name=` then the value as the next word.
+        let bare = word.trim_end_matches([':', '=']);
+        if bare.len() < word.len()
+            && name_is_sensitive(bare)
+            && let Some(next) = words.get(i + 1)
+            && value_is_substantial(next, MIN_VALUE)
+        {
+            out.push(word.to_string());
+            out.push("[REDACTED]".to_string());
+            changed = true;
+            i += 2;
+            continue;
+        }
+        out.push(word.to_string());
+        i += 1;
+    }
+    changed.then(|| out.join(" "))
+}
+
+/// Splits `name=value` / `name:value` at the first `=` or `:`, returning
+/// `(name, separator, value)`. `None` if there is no separator or the name is empty.
+fn split_assignment(word: &str) -> Option<(&str, &str, &str)> {
+    let idx = word.find(['=', ':'])?;
+    if idx == 0 {
+        return None;
+    }
+    Some((&word[..idx], &word[idx..idx + 1], &word[idx + 1..]))
+}
+
+/// Whether a value is worth redacting: substantial and not already redacted. Quotes
+/// and backticks are stripped before measuring its length.
+fn value_is_substantial(value: &str, min: usize) -> bool {
+    let v = value.trim_matches(|c| matches!(c, '"' | '\'' | '`'));
+    v.len() >= min && v != "[REDACTED]"
 }
 
 /// Reports whether `text` carries a secret-shaped token or PEM block, without
@@ -295,6 +386,37 @@ mod tests {
         let before = v.clone();
         redact_value(&mut v);
         assert_eq!(v, before, "no secret shape, nothing to redact");
+    }
+
+    #[test]
+    fn redacts_a_sensitive_keyed_value_with_no_prefix() {
+        // The canonical gap: an AWS secret access key has no recognizable prefix, so
+        // only the sensitive key *name* gives it away. The token-prefix net misses it;
+        // the name=value net must catch it.
+        let leak = "export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+        assert!(contains_secret(leak), "keyed secret should be detected");
+        let redacted = redact_text(leak);
+        assert!(redacted.contains("[REDACTED]"));
+        assert!(!redacted.contains("wJalrXUtnFEMI"));
+        // The key name survives so the step still reads.
+        assert!(redacted.contains("AWS_SECRET_ACCESS_KEY"));
+    }
+
+    #[test]
+    fn redacts_a_sensitive_value_in_the_next_word() {
+        let leak = "password: hunter2-very-long-passphrase";
+        assert!(contains_secret(leak));
+        assert!(!redact_text(leak).contains("hunter2-very-long-passphrase"));
+    }
+
+    #[test]
+    fn leaves_short_or_non_sensitive_assignments_alone() {
+        // A non-sensitive name, even with a long value, is not a secret.
+        assert!(!contains_secret(
+            "output_path=/Users/me/build/artifact.tar.gz"
+        ));
+        // A sensitive name with a trivial value (a boolean/flag) is not redacted.
+        assert!(!contains_secret("secret=on"));
     }
 
     #[test]

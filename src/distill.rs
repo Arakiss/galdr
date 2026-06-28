@@ -612,8 +612,9 @@ fn render_complete_skill(
 /// Drops recording scaffolding from the steps, sharing the noise rubric with the
 /// validation gate ([`crate::validate::is_noise_step`]). Guarded so the result is
 /// never empty: a recording that is *only* scaffolding keeps its original steps
-/// rather than distilling to a zero-step skill.
-fn meaningful_steps(events: &[Event]) -> Vec<Event> {
+/// rather than distilling to a zero-step skill. Shared with `diff`, so two recordings
+/// are aligned on the same meaningful steps a distilled skill would show.
+pub(crate) fn meaningful_steps(events: &[Event]) -> Vec<Event> {
     let kept: Vec<Event> = events
         .iter()
         .filter(|e| {
