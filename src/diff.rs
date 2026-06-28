@@ -296,10 +296,16 @@ pub fn analyze(name_a: &str, events_a: &[Event], name_b: &str, events_b: &[Event
     }
 }
 
-/// Loads both recordings from disk and diffs them.
+/// Loads both recordings from disk and diffs them. The step sequences are filtered to
+/// their meaningful steps first — the same rubric `distill` uses — so recording
+/// scaffolding (galdr's own control commands in older spans, temp reads, polling)
+/// never aligns as a step or a bogus parameter. Aligning on the steps a skill would
+/// actually show keeps the confidence and the parameters honest.
 pub fn compute(id_a: &str, id_b: &str) -> Result<DiffReport> {
     let (name_a, events_a) = load(id_a)?;
     let (name_b, events_b) = load(id_b)?;
+    let events_a = crate::distill::meaningful_steps(&events_a);
+    let events_b = crate::distill::meaningful_steps(&events_b);
     Ok(analyze(&name_a, &events_a, &name_b, &events_b))
 }
 
