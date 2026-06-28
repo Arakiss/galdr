@@ -62,6 +62,16 @@ pub fn run() -> Result<()> {
     // and the event is dropped (the sensor still exits 0), which is the safe outcome.
     let input: HookInput = serde_json::from_str(&buf)?;
 
+    // galdr's own recording-control commands (`galdr rec start/stop/status`, and the
+    // `galdr hook` sensor itself) are instrumentation of the capture, not steps of the
+    // task. Never record them: they would pollute the span, skew `diff` step counts,
+    // and surface as a bogus parameter. This runs before session binding too, so the
+    // first *real* event is the one that binds. (Task noise — temp reads, polling — is
+    // filtered later at distill; this is specifically galdr's own meta-commands.)
+    if is_galdr_control_command(&input.tool_name, &input.tool_input) {
+        return Ok(());
+    }
+
     // Session scoping: a single global `active` flag means every concurrent agent
     // session's hook sees this recording. Without scoping, a session in another
     // project would leak its tool calls (and their payloads) into this span. Bind
@@ -183,6 +193,51 @@ fn capture_decision(
 fn path_within(path: &str, base: &str) -> bool {
     let base = base.trim_end_matches('/');
     path == base || path.starts_with(&format!("{base}/"))
+}
+
+/// True if the event is a Bash call that does *nothing but* drive a galdr recording
+/// (`galdr rec start/stop/status`, or the `galdr hook` sensor), possibly with a leading
+/// `cd`. Such a call is instrumentation of the capture, not a step of the task.
+///
+/// It is deliberately conservative about compound commands: the call is a control
+/// command only when **every** `&&`/`;`/`|`-separated segment is either a `cd` or a
+/// `galdr rec/hook` invocation. If real work is bundled into the same call
+/// (`galdr rec start x && cargo build`), the call is kept — recording galdr's own
+/// command as a step is a far milder cost than silently dropping the bundled work.
+/// The program word must be unquoted, so a control phrase quoted inside another
+/// command (a commit message like `git commit -m 'galdr rec start'`) is still recorded.
+fn is_galdr_control_command(tool_name: &str, tool_input: &serde_json::Value) -> bool {
+    if tool_name != "Bash" {
+        return false;
+    }
+    let Some(command) = tool_input.get("command").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    let segments: Vec<&str> = command
+        .split([';', '\n', '|', '&'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    !segments.is_empty()
+        && segments
+            .iter()
+            .all(|seg| is_cd_segment(seg) || is_galdr_rec_segment(seg))
+}
+
+/// A bare `cd` or `cd <dir>` segment.
+fn is_cd_segment(seg: &str) -> bool {
+    seg == "cd" || seg.starts_with("cd ")
+}
+
+/// A segment whose program is `galdr` (bare or by absolute path) and whose first
+/// argument is `rec` or `hook`.
+fn is_galdr_rec_segment(seg: &str) -> bool {
+    let mut tokens = seg.split_whitespace();
+    let Some(prog) = tokens.next() else {
+        return false;
+    };
+    let is_galdr = prog == "galdr" || prog.ends_with("/galdr");
+    is_galdr && matches!(tokens.next(), Some("rec") | Some("hook"))
 }
 
 fn denied_by_capture_policy(event: &span::Event, capture: &config::CaptureConfig) -> bool {
@@ -425,5 +480,33 @@ mod tests {
         assert!(path_within("/a/b/c", "/a/b"));
         assert!(!path_within("/a/bc", "/a/b"));
         assert!(!path_within("/x", "/a/b"));
+    }
+
+    #[test]
+    fn galdr_control_commands_are_not_recorded() {
+        let ctl =
+            |cmd: &str| is_galdr_control_command("Bash", &serde_json::json!({ "command": cmd }));
+        assert!(ctl("galdr rec start my-task"));
+        assert!(ctl("galdr rec stop"));
+        assert!(ctl("galdr rec status"));
+        // Tolerates a leading cd and an absolute path to the binary.
+        assert!(ctl("cd /repo && galdr rec start x"));
+        assert!(ctl("/Users/me/.cargo/bin/galdr rec stop"));
+        assert!(ctl("galdr rec start x >/dev/null"));
+        // Real task commands — including other galdr subcommands — are recorded.
+        assert!(!ctl("galdr distill 01ABC"));
+        assert!(!ctl("cargo test"));
+        // A control phrase quoted inside another command stays recorded.
+        assert!(!ctl("git commit -m 'galdr rec start'"));
+        // Real work bundled into the same call is kept, not dropped with the control cmd.
+        assert!(!ctl("galdr rec start x && cargo build"));
+        assert!(!ctl(
+            "galdr rec start x\nVER=$(grep version Cargo.toml)\necho $VER"
+        ));
+        // Only Bash is inspected; an unrelated tool with such input is not a control cmd.
+        assert!(!is_galdr_control_command(
+            "Read",
+            &serde_json::json!({ "command": "galdr rec start x" })
+        ));
     }
 }
