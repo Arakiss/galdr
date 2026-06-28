@@ -24,6 +24,7 @@ mod record;
 mod setup;
 mod skill;
 mod span;
+mod suggest;
 mod summary;
 mod tui;
 mod validate;
@@ -221,6 +222,24 @@ enum Commands {
 
     /// Rebuild the SQLite catalog from the spans and recordings on disk.
     Reindex,
+
+    /// Suggest skill opportunities: repeated tasks not yet distilled into a skill.
+    ///
+    /// Signs every recording by the shape of its meaningful steps, groups the runs
+    /// that share a shape, dedupes against the skills already installed, and ranks
+    /// what is left by repeatability. Turns "skill opportunity" from a judgment call
+    /// into a number you can query. It only sees recorded sessions.
+    Suggest {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Show only the top N opportunities.
+        #[arg(long)]
+        top: Option<usize>,
+        /// Minimum number of recordings sharing a shape to surface it (default 2).
+        #[arg(long, default_value_t = 2)]
+        min_count: usize,
+    },
 
     /// Run the supervisor daemon (catalog indexer + control socket).
     Daemon {
@@ -449,6 +468,11 @@ fn main() {
         Commands::Parametrize { a, b, emit } => {
             exit_on_error(parametrize::parametrize(&a, &b, emit))
         }
+        Commands::Suggest {
+            json,
+            top,
+            min_count,
+        } => exit_on_error(suggest::run(json, top, min_count)),
         Commands::Reindex => exit_on_error(cmd_reindex()),
         Commands::Daemon { action, detach } => match action {
             Some(DaemonAction::Status) => exit_on_error(cmd_daemon_status()),
