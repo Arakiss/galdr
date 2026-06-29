@@ -6,7 +6,7 @@
   "separate-pull-requests": false,
   "pull-request-title-pattern": "chore${scope}: release ${version}",
   "group-pull-request-title-pattern": "chore${scope}: release ${version}",
-  "bootstrap-sha": "c1a0b45cc8bdc960b358f47936d8ce9f12f84191",
+  "bootstrap-sha": "17f8c5d63ee7749980e2ff644c85a9ccc896d7ec",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug fixes" },
