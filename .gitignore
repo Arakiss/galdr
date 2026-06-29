@@ -15,3 +15,6 @@ Cargo.lock.bak
 .idea/
 .vscode/
 *.swp
+
+# demo tapes are local-only — the published GIF is the artifact, not the staging script
+assets/*.tape
