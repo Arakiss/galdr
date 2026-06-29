@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.7.0](https://github.com/Arakiss/galdr/compare/v0.6.1...v0.7.0) (2026-06-29)
+
+
+### Features
+
+* **cli:** human-friendly DX — never type a 26-char id ([#30](https://github.com/Arakiss/galdr/issues/30)) ([f300202](https://github.com/Arakiss/galdr/commit/f300202165f4737f7fceaba085b8091d1b2c633f))
+
 ## [0.6.1](https://github.com/Arakiss/galdr/compare/v0.6.0...v0.6.1) (2026-06-29)
 
 
