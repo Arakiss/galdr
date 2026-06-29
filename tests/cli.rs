@@ -940,6 +940,29 @@ fn suggest_surfaces_repeated_tasks_and_dedupes_distilled_ones() {
 }
 
 #[test]
+fn bare_galdr_shows_a_friendly_overview() {
+    // `galdr` with no subcommand is a human at a terminal — show a home screen, not a
+    // clap usage error. Piped (not a TTY), the output is plain text with no ANSI codes.
+    let sb = Sandbox::new();
+    sb.record("demo-task", &[BASH_STATUS]);
+
+    let out = sb.run(&[]);
+    assert!(out.status.success(), "bare `galdr` must exit 0");
+    let text = stdout(&out);
+    assert!(text.contains("galdr"), "{text}");
+    assert!(text.contains("next"), "shows next steps: {text}");
+    assert!(text.contains("galdr rec start"), "{text}");
+    assert!(
+        text.contains("1 recordings"),
+        "reflects the catalog: {text}"
+    );
+    assert!(
+        !text.contains('\u{1b}'),
+        "no ANSI escapes when piped: {text:?}"
+    );
+}
+
+#[test]
 fn recording_references_resolve_without_a_ulid() {
     // The human DX: never type a 26-char id. `distill`/`show` default to the most
     // recent recording and also accept a recording name.

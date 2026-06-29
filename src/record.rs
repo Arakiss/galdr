@@ -98,7 +98,7 @@ pub fn start(name: Option<String>) -> Result<()> {
         .open(&span_path)
         .with_context(|| format!("could not open span {}", span_path.display()))?;
 
-    println!("● recording \"{name}\"");
+    println!("{} recording \"{name}\"", crate::style::red("●"));
     println!("  do the task, then:  galdr rec stop");
     Ok(())
 }
@@ -139,7 +139,11 @@ pub fn stop() -> Result<()> {
     });
 
     let plural = if steps == 1 { "" } else { "s" };
-    println!("■ stopped \"{}\" — {steps} step{plural}", active.name);
+    println!(
+        "{} stopped \"{}\" — {steps} step{plural}",
+        crate::style::accent("■"),
+        active.name
+    );
     println!("  turn it into a skill:  galdr distill");
     Ok(())
 }
