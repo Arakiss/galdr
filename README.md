@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://crates.io/crates/galdr"><img src="https://img.shields.io/crates/v/galdr.svg" alt="crates.io"></a>
   <a href="https://github.com/Arakiss/galdr/actions/workflows/ci.yml"><img src="https://github.com/Arakiss/galdr/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0">
+  <img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0">
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88+">
   <img src="https://img.shields.io/badge/egress-none%20·%20loopback--only-4FD6C9.svg" alt="No external egress, loopback-only">
 </p>
@@ -386,4 +386,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Commits follow
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or the
+[MIT license](LICENSE-MIT) at your option — the standard Rust dual-license, so you
+pick whichever fits.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for
+inclusion in this crate by you, as defined in the Apache-2.0 license, shall be dual
+licensed as above, without any additional terms or conditions.
