@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.8.0](https://github.com/Arakiss/galdr/compare/v0.7.0...v0.8.0) (2026-06-29)
+
+
+### Features
+
+* **cli:** friendly overview screen + TTY-aware styling ([#34](https://github.com/Arakiss/galdr/issues/34)) ([2c180dd](https://github.com/Arakiss/galdr/commit/2c180dd85ab04405be10a8c69c179c7a09fb34cb))
+
 ## [0.7.0](https://github.com/Arakiss/galdr/compare/v0.6.1...v0.7.0) (2026-06-29)
 
 
