@@ -98,9 +98,8 @@ pub fn start(name: Option<String>) -> Result<()> {
         .open(&span_path)
         .with_context(|| format!("could not open span {}", span_path.display()))?;
 
-    println!("● recording \"{name}\"  rec_id={rec_id}");
-    println!("  span: {}", span_path.display());
-    println!("  stop with: galdr rec stop");
+    println!("● recording \"{name}\"");
+    println!("  do the task, then:  galdr rec stop");
     Ok(())
 }
 
@@ -139,18 +138,17 @@ pub fn stop() -> Result<()> {
         recording: recording.clone(),
     });
 
-    println!(
-        "■ recording stopped \"{}\"  rec_id={}",
-        active.name, active.rec_id
-    );
-    println!("  steps: {steps}");
-    println!("  distill with: galdr distill {}", active.rec_id);
+    let plural = if steps == 1 { "" } else { "s" };
+    println!("■ stopped \"{}\" — {steps} step{plural}", active.name);
+    println!("  turn it into a skill:  galdr distill");
     Ok(())
 }
 
-/// Lists closed recordings, newest first (the rec_id is a ULID, time-sortable).
-pub fn list() -> Result<()> {
-    let dir = paths::recordings_dir()?;
+/// All closed recordings, newest first (the rec_id is a ULID, time-sortable).
+pub fn all_recordings() -> Vec<Recording> {
+    let Ok(dir) = paths::recordings_dir() else {
+        return Vec::new();
+    };
     let mut recordings: Vec<Recording> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for entry in entries.flatten() {
@@ -166,7 +164,54 @@ pub fn list() -> Result<()> {
         }
     }
     recordings.sort_by(|a, b| b.rec_id.cmp(&a.rec_id));
+    recordings
+}
 
+/// Resolves a human-friendly recording reference to a rec_id, so nobody has to copy a
+/// 26-character ULID. `None` resolves to the **most recent** recording (so `galdr
+/// distill` with no argument distills what you just recorded). A given reference matches,
+/// in order: an exact rec_id, a unique rec_id prefix (case-insensitive), or a recording
+/// **name** (the most recent of that name). Ambiguity and misses fail with a friendly,
+/// actionable message rather than a cryptic id error.
+pub fn resolve_ref(reference: Option<&str>) -> Result<String> {
+    resolve_in(&all_recordings(), reference)
+}
+
+/// The pure matching behind [`resolve_ref`] (recordings newest-first). Separated so it
+/// is unit tested without touching disk.
+fn resolve_in(recordings: &[Recording], reference: Option<&str>) -> Result<String> {
+    if recordings.is_empty() {
+        bail!("no recordings yet — record one first with `galdr rec start <name>`.");
+    }
+    let Some(reference) = reference.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(recordings[0].rec_id.clone()); // newest
+    };
+    if let Some(rec) = recordings.iter().find(|r| r.rec_id == reference) {
+        return Ok(rec.rec_id.clone());
+    }
+    let upper = reference.to_ascii_uppercase();
+    let by_prefix: Vec<&Recording> = recordings
+        .iter()
+        .filter(|r| r.rec_id.starts_with(&upper))
+        .collect();
+    if by_prefix.len() == 1 {
+        return Ok(by_prefix[0].rec_id.clone());
+    }
+    if by_prefix.len() > 1 {
+        bail!(
+            "`{reference}` matches {} recordings — add more characters, or use the name (see `galdr list`).",
+            by_prefix.len()
+        );
+    }
+    if let Some(rec) = recordings.iter().find(|r| r.name == reference) {
+        return Ok(rec.rec_id.clone());
+    }
+    bail!("no recording matches `{reference}` — run `galdr list` to see your recordings.");
+}
+
+/// Lists closed recordings, newest first (the rec_id is a ULID, time-sortable).
+pub fn list() -> Result<()> {
+    let recordings = all_recordings();
     if recordings.is_empty() {
         println!("(no recordings yet — use `galdr rec start <name>`)");
         return Ok(());
@@ -178,4 +223,77 @@ pub fn list() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rec(id: &str, name: &str) -> Recording {
+        Recording {
+            rec_id: id.into(),
+            name: name.into(),
+            started_at: "2026-01-01T00:00:00Z".into(),
+            ended_at: "2026-01-01T00:01:00Z".into(),
+            steps: 3,
+            cwd: None,
+        }
+    }
+
+    // Newest first, the way `all_recordings` returns them.
+    fn fixture() -> Vec<Recording> {
+        vec![
+            rec("01KW9Z00000000000000000002", "weekly-report"),
+            rec("01KW9Z00000000000000000001", "ship-preview"),
+            rec("01KW9A00000000000000000000", "weekly-report"),
+        ]
+    }
+
+    #[test]
+    fn none_resolves_to_the_most_recent() {
+        assert_eq!(
+            resolve_in(&fixture(), None).unwrap(),
+            "01KW9Z00000000000000000002"
+        );
+    }
+
+    #[test]
+    fn exact_id_and_unique_prefix_resolve() {
+        let recs = fixture();
+        assert_eq!(
+            resolve_in(&recs, Some("01KW9Z00000000000000000001")).unwrap(),
+            "01KW9Z00000000000000000001"
+        );
+        // A unique prefix is enough; matching is case-insensitive.
+        assert_eq!(
+            resolve_in(&recs, Some("01kw9z00000000000000000001")).unwrap(),
+            "01KW9Z00000000000000000001"
+        );
+    }
+
+    #[test]
+    fn name_resolves_to_the_most_recent_of_that_name() {
+        // Two "weekly-report" runs → the newest one wins.
+        assert_eq!(
+            resolve_in(&fixture(), Some("weekly-report")).unwrap(),
+            "01KW9Z00000000000000000002"
+        );
+    }
+
+    #[test]
+    fn ambiguous_prefix_and_unknown_ref_fail_with_guidance() {
+        let recs = fixture();
+        // "01KW9Z" prefixes two recordings → ambiguous.
+        let ambiguous = resolve_in(&recs, Some("01KW9Z")).unwrap_err().to_string();
+        assert!(ambiguous.contains("matches 2 recordings"), "{ambiguous}");
+        // A miss names the recovery command.
+        let miss = resolve_in(&recs, Some("nope")).unwrap_err().to_string();
+        assert!(miss.contains("galdr list"), "{miss}");
+    }
+
+    #[test]
+    fn no_recordings_is_a_friendly_error() {
+        let err = resolve_in(&[], None).unwrap_err().to_string();
+        assert!(err.contains("galdr rec start"), "{err}");
+    }
 }

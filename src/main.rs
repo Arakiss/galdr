@@ -63,8 +63,9 @@ enum Commands {
     /// install the distillation the agent prepared. With `--auto`, a local MLX
     /// engine writes the finished skill (falling back to the draft if unavailable).
     Distill {
-        /// rec_id of the recording to distill.
-        id: String,
+        /// Which recording to distill: a rec_id, a unique id prefix, or a recording
+        /// name. Omit it to distill the most recent recording (the one you just made).
+        reference: Option<String>,
         /// Install the final SKILL.md from this file (distilled by the agent).
         #[arg(long, value_name = "FILE", conflicts_with_all = ["auto", "draft"])]
         from: Option<PathBuf>,
@@ -97,8 +98,9 @@ enum Commands {
 
     /// Show one recording with its steps.
     Show {
-        /// rec_id of the recording.
-        id: String,
+        /// Which recording: a rec_id, a unique id prefix, or a name. Omit for the most
+        /// recent.
+        reference: Option<String>,
         /// Emit machine-readable JSON instead of a table.
         #[arg(long)]
         json: bool,
@@ -157,8 +159,9 @@ enum Commands {
 
     /// Export a recording without raw payloads unless explicitly requested.
     Export {
-        /// rec_id of the recording.
-        id: String,
+        /// Which recording: a rec_id, a unique id prefix, or a name. Omit for the most
+        /// recent.
+        reference: Option<String>,
         /// Output directory.
         #[arg(long, value_name = "DIR")]
         out: PathBuf,
@@ -328,9 +331,10 @@ enum OutcomeAction {
         /// Skill name under ~/.agents/skills.
         #[arg(long)]
         skill: String,
-        /// Recording where the skill was used.
+        /// Recording where the skill was used: a rec_id, a unique prefix, or a name.
+        /// Omit it to use the most recent recording.
         #[arg(long = "rec")]
-        rec_id: String,
+        rec_id: Option<String>,
         /// Optional task family for later grouping.
         #[arg(long)]
         task_kind: Option<String>,
@@ -401,7 +405,7 @@ fn main() {
             exit_on_error(result);
         }
         Commands::Distill {
-            id,
+            reference,
             from,
             draft,
             auto,
@@ -409,6 +413,7 @@ fn main() {
             name,
             strict,
         } => {
+            let id = resolve_or_exit(reference.as_deref());
             if auto {
                 exit_on_error(distill::distill_auto(
                     &id,
@@ -427,7 +432,9 @@ fn main() {
             }
         }
         Commands::List { json } => exit_on_error(cmd_list(json)),
-        Commands::Show { id, json } => exit_on_error(cmd_show(&id, json)),
+        Commands::Show { reference, json } => {
+            exit_on_error(cmd_show(&resolve_or_exit(reference.as_deref()), json))
+        }
         Commands::Skills { json } => exit_on_error(cmd_skills(json)),
         Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
         Commands::Link { skill, all, json } => exit_on_error(cmd_link(skill.as_deref(), all, json)),
@@ -437,11 +444,16 @@ fn main() {
         Commands::Outcome { action } => exit_on_error(cmd_outcome(action)),
         Commands::Tui => exit_on_error(tui::run()),
         Commands::Export {
-            id,
+            reference,
             out,
             include_raw,
             redact,
-        } => exit_on_error(export::export_recording(&id, &out, include_raw, redact)),
+        } => exit_on_error(export::export_recording(
+            &resolve_or_exit(reference.as_deref()),
+            &out,
+            include_raw,
+            redact,
+        )),
         Commands::Validate {
             skill,
             all,
@@ -721,6 +733,7 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
             manual_interventions,
             notes,
         } => {
+            let rec_id = resolve_or_exit(rec_id.as_deref());
             let event = outcome::record_usage(outcome::UsageInput {
                 skill_name: skill,
                 rec_id,
@@ -1138,5 +1151,18 @@ fn exit_on_error(result: anyhow::Result<()>) {
     if let Err(err) = result {
         eprintln!("error: {err:#}");
         std::process::exit(1);
+    }
+}
+
+/// Resolves a recording reference (a rec_id, a unique prefix, a name, or `None` for the
+/// most recent) to a rec_id — or prints a friendly error and exits. Lets every command
+/// that takes a recording accept a human-typed reference instead of a 26-char ULID.
+fn resolve_or_exit(reference: Option<&str>) -> String {
+    match record::resolve_ref(reference) {
+        Ok(id) => id,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            std::process::exit(1);
+        }
     }
 }

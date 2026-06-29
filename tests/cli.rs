@@ -940,6 +940,35 @@ fn suggest_surfaces_repeated_tasks_and_dedupes_distilled_ones() {
 }
 
 #[test]
+fn recording_references_resolve_without_a_ulid() {
+    // The human DX: never type a 26-char id. `distill`/`show` default to the most
+    // recent recording and also accept a recording name.
+    let sb = Sandbox::new();
+    let older = sb.record("weekly-report", &[BASH_STATUS]);
+    let newest = sb.record("ship-preview", &[BASH_STATUS]);
+
+    // `galdr distill` with no argument distills the most recent recording.
+    assert!(sb.run(&["distill"]).status.success());
+    let skill = sb.skill_md("galdr-ship-preview");
+    assert!(
+        skill.contains(&newest),
+        "the newest recording was distilled"
+    );
+
+    // `galdr show <name>` resolves by name (and is not the newest here).
+    let shown = sb.run(&["show", "weekly-report", "--json"]);
+    assert!(shown.status.success());
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&shown)).unwrap();
+    assert_eq!(detail["recording"]["rec_id"], older.as_str());
+
+    // The full id still works, and a miss fails with guidance, not a cryptic id error.
+    assert!(sb.run(&["show", &newest]).status.success());
+    let miss = sb.run(&["show", "does-not-exist"]);
+    assert!(!miss.status.success());
+    assert!(stderr(&miss).contains("galdr list"));
+}
+
+#[test]
 fn suggest_and_bench_render_human_reports() {
     let sb = Sandbox::new();
     // Empty install: both report nothing to do, in words, without panicking.

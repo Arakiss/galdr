@@ -85,7 +85,7 @@ fn write_complete(
         meaningful_steps(&events).len()
     );
     println!(
-        "Refine it any time: edit the SKILL.md, or `galdr distill {id} --draft` for an agent-assisted pass."
+        "Refine it any time: edit the SKILL.md, or `galdr distill --draft` for an agent-assisted pass."
     );
     Ok(())
 }
@@ -211,6 +211,22 @@ pub(crate) fn gate_or_bail(md: &str, ctx: &validate::ValidationCtx) -> Result<()
     Ok(())
 }
 
+/// Abbreviates the user's home directory to `~` for friendlier, shareable output — so
+/// an install line reads `~/.agents/skills/…` instead of a long personal path.
+fn tilde(path: &Path) -> String {
+    let shown = path.display().to_string();
+    match paths::home_dir() {
+        Some(home) => {
+            let home = home.display().to_string();
+            shown
+                .strip_prefix(&home)
+                .map(|rest| format!("~{rest}"))
+                .unwrap_or(shown)
+        }
+        None => shown,
+    }
+}
+
 /// The single sanctioned writer of the skills directory, shared by `--from` and
 /// `--auto`. Runs the gate, writes the `SKILL.md`, and records its provenance
 /// best-effort.
@@ -227,7 +243,7 @@ fn install_skill(
     let skill_path = skill_dir.join("SKILL.md");
     warn_on_overwrite(&skill_path);
     std::fs::write(&skill_path, content)?;
-    println!("Skill installed at {}", skill_path.display());
+    println!("✓ skill installed: {}", tilde(&skill_path));
 
     note_skill_written(skill_name, &skill_path, rec_id, catalog::STATUS_FINAL);
     // A skill the harness can't find is useless: make the finished skill discoverable
