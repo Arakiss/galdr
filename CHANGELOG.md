@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.6.0](https://github.com/Arakiss/galdr/compare/v0.5.1...v0.6.0) (2026-06-29)
+
+
+### Features
+
+* skill-opportunity detection (suggest) + replay-reliability benchmark (bench) ([#24](https://github.com/Arakiss/galdr/issues/24)) ([8e3a9ee](https://github.com/Arakiss/galdr/commit/8e3a9eea68b5aa5210a11cb03b770ce9b56ebe78))
+
 ## [0.5.1](https://github.com/Arakiss/galdr/compare/v0.5.0...v0.5.1) (2026-06-28)
 
 
