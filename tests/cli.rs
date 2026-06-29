@@ -127,6 +127,10 @@ fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
 const BASH_STATUS: &str =
     r#"{"tool_name":"Bash","tool_input":{"command":"git status"},"tool_response":{}}"#;
 
@@ -933,6 +937,169 @@ fn suggest_surfaces_repeated_tasks_and_dedupes_distilled_ones() {
         after.as_array().unwrap().is_empty(),
         "an installed skill dedupes its shape out of the opportunities"
     );
+}
+
+#[test]
+fn suggest_and_bench_render_human_reports() {
+    let sb = Sandbox::new();
+    // Empty install: both report nothing to do, in words, without panicking.
+    assert!(sb.run(&["suggest"]).status.success());
+    assert!(stdout(&sb.run(&["suggest"])).contains("No repeated"));
+    assert!(stdout(&sb.run(&["bench"])).contains("No replay outcomes"));
+
+    // A repeated shape surfaces in the human suggest table.
+    let write = |path: &str| {
+        format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{path}"}},"tool_response":{{}}}}"#
+        )
+    };
+    let id = sb.record("ship", &[BASH_STATUS, &write("/a/out.md")]);
+    sb.record("ship", &[BASH_STATUS, &write("/b/out.md")]);
+    let suggest = stdout(&sb.run(&["suggest"]));
+    assert!(suggest.contains("Skill opportunities"), "{suggest}");
+    assert!(suggest.contains("galdr distill"), "{suggest}");
+
+    // A recorded outcome surfaces in the human bench table.
+    let refined = sb.home().join("s.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-ship\ndescription: \"ship\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        sb.run(&[
+            "outcome",
+            "usage",
+            "--skill",
+            "galdr-ship",
+            "--rec",
+            &id,
+            "--outcome",
+            "success",
+        ])
+        .status
+        .success()
+    );
+    let bench = stdout(&sb.run(&["bench"]));
+    assert!(bench.contains("Replay reliability"), "{bench}");
+    assert!(bench.contains("galdr-ship"), "{bench}");
+}
+
+#[test]
+fn rec_control_rejects_double_start_and_orphan_stop() {
+    let sb = Sandbox::new();
+    // Stopping with nothing active is an error, not a silent success.
+    let stop = sb.run(&["rec", "stop"]);
+    assert!(!stop.status.success());
+    assert!(stderr(&stop).contains("no active recording"));
+
+    // Status with nothing active reports it cleanly (exit 0).
+    let status = sb.run(&["rec", "status"]);
+    assert!(status.status.success());
+    assert!(stdout(&status).contains("no active recording"));
+
+    // First start succeeds; a second start while one is active is refused.
+    assert!(sb.run(&["rec", "start", "one"]).status.success());
+    let again = sb.run(&["rec", "start", "two"]);
+    assert!(!again.status.success());
+    assert!(stderr(&again).contains("already active"));
+
+    // Stop succeeds and a second stop is an orphan error again.
+    assert!(sb.run(&["rec", "stop"]).status.success());
+    assert!(!sb.run(&["rec", "stop"]).status.success());
+}
+
+#[test]
+fn a_corrupt_active_flag_is_treated_as_not_recording() {
+    let sb = Sandbox::new();
+    // Establish ~/.galdr by starting and stopping once.
+    assert!(sb.run(&["rec", "start", "seed"]).status.success());
+    assert!(sb.run(&["rec", "stop"]).status.success());
+    // Corrupt the active flag: the sensor and control must treat it as "no recording"
+    // (the safe side), not crash.
+    std::fs::write(sb.home().join(".galdr/active"), "}{ not json").unwrap();
+    let status = sb.run(&["rec", "status"]);
+    assert!(status.status.success());
+    assert!(stdout(&status).contains("no active recording"));
+    // And a fresh start works despite the garbage flag.
+    assert!(sb.run(&["rec", "start", "fresh"]).status.success());
+}
+
+#[test]
+fn list_is_empty_on_a_fresh_install() {
+    let sb = Sandbox::new();
+    let out = sb.run(&["list"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("no recordings yet"));
+}
+
+#[test]
+fn bench_reports_replay_hit_rate_from_recorded_outcomes() {
+    let sb = Sandbox::new();
+    let id = sb.record("bench", &[BASH_STATUS]);
+    let refined = sb.home().join("bench.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: galdr-bench\ndescription: \"bench task\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &id, "--from"])
+            .arg(&refined)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    // Two recorded replays of the skill: one clean, one failed after a retry.
+    let record_outcome = |outcome: &str, retries: &str| {
+        sb.run(&[
+            "outcome",
+            "usage",
+            "--skill",
+            "galdr-bench",
+            "--rec",
+            &id,
+            "--outcome",
+            outcome,
+            "--retries",
+            retries,
+        ])
+    };
+    assert!(record_outcome("success", "0").status.success());
+    assert!(record_outcome("failed", "1").status.success());
+
+    let out = sb.run(&["bench", "--json"]);
+    assert!(out.status.success());
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(report["total_replays"], 2);
+    assert_eq!(report["overall_success_rate"], 0.5);
+    let skill = report["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["skill_name"] == "galdr-bench")
+        .expect("galdr-bench in the report");
+    assert_eq!(skill["uses"], 2);
+    assert_eq!(skill["success"], 1);
+    assert_eq!(skill["failed"], 1);
+    assert_eq!(skill["success_rate"], 0.5);
+    assert_eq!(skill["avg_retries"], 0.5);
 }
 
 #[test]
