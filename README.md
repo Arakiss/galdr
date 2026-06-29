@@ -3,10 +3,10 @@
 </p>
 
 <p align="center">
+  <a href="https://crates.io/crates/galdr"><img src="https://img.shields.io/crates/v/galdr.svg" alt="crates.io"></a>
   <a href="https://github.com/Arakiss/galdr/actions/workflows/ci.yml"><img src="https://github.com/Arakiss/galdr/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0">
   <img src="https://img.shields.io/badge/rust-1.88%2B-orange.svg" alt="Rust 1.88+">
-  <img src="https://img.shields.io/badge/status-phase%201%20·%20catalog%20%2B%20evals%20%2B%20ops-8B7BF0.svg" alt="Status: phase 1">
   <img src="https://img.shields.io/badge/egress-none%20·%20loopback--only-4FD6C9.svg" alt="No external egress, loopback-only">
 </p>
 
@@ -22,14 +22,19 @@ distills them into a reproducible skill. Everything is local: the raw lives in
 The idea: instead of re-explaining to your agent how to do a task it already did well,
 **record it once** and turn it into a skill it can replay with judgment.
 
+<p align="center">
+  <img src="assets/demo.gif" alt="galdr: record a task, distill it into a skill, surface opportunities, measure replay reliability" width="100%">
+</p>
+
 > [!NOTE]
-> **Status: Phase 1.** Built on the proven Phase 0 loop (record → distill → replay),
-> this adds the supervisor daemon, a SQLite catalog (a rebuildable *index*, never the
-> truth), readiness/evaluator signals for distilled skills, operational diagnostics,
-> safe export, a terminal UI, diff-based parametrization of two recordings, and optional
-> autonomous distillation against a local, loopback-only MLX server. A plain
-> `cargo build` needs none of the MLX path — autonomous distillation is feature-gated
-> and falls back cleanly to the agent-assisted draft.
+> Around the core loop (record → distill → replay) galdr adds: a SQLite catalog (a
+> rebuildable *index*, never the truth) with a supervisor daemon, an install-time
+> content gate (blocks secrets, personal paths, dangerous commands), a terminal UI,
+> safe export, diff-based **parametrization** of two recordings, **`galdr suggest`**
+> (repeated tasks worth turning into a skill), **`galdr bench`** (per-skill replay
+> hit-rate from recorded outcomes), and optional autonomous distillation against a
+> local, loopback-only MLX server. A plain `cargo build` needs none of the MLX path —
+> it is feature-gated and falls back cleanly to the agent-assisted draft.
 
 ## Why tool calls, not pixels
 
@@ -72,10 +77,23 @@ agent session ──(PostToolUse)──▶ galdr hook ──append──▶ span
    Finished in one, no agent pass required. For a higher ceiling, `--draft` emits
    scaffolding an agent refines, and `--auto` lets a local model write it.
 
+## Install
+
+```sh
+# from crates.io
+cargo install galdr
+
+# or from source
+cargo install --git https://github.com/Arakiss/galdr
+```
+
+Prefer a prebuilt binary? Every [release](https://github.com/Arakiss/galdr/releases/latest)
+ships signed, checksummed binaries (Sigstore + SHA-256) and an SBOM for macOS and Linux
+(arm64 + x86_64). No network egress at runtime — galdr only ever talks to loopback.
+
 ## Quickstart
 
 ```sh
-cargo install --path .
 galdr setup skill         # teach your harness(es) how to drive galdr (one time)
 
 galdr rec start demo      # start recording
