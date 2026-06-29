@@ -243,7 +243,11 @@ fn install_skill(
     let skill_path = skill_dir.join("SKILL.md");
     warn_on_overwrite(&skill_path);
     std::fs::write(&skill_path, content)?;
-    println!("✓ skill installed: {}", tilde(&skill_path));
+    println!(
+        "{} skill installed: {}",
+        crate::style::green("✓"),
+        tilde(&skill_path)
+    );
 
     note_skill_written(skill_name, &skill_path, rec_id, catalog::STATUS_FINAL);
     // A skill the harness can't find is useless: make the finished skill discoverable
