@@ -39,6 +39,8 @@ rules:
       - parametrize
       - distill
       - validate
+      - suggest
+      - bench
       - engine
       - config
       - cli

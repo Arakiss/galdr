@@ -61,7 +61,8 @@ pub struct DiffReport {
 
 /// The structural signature of a step: tool + sorted top-level input keys, plus
 /// the first command token for `Bash`. Steps with the same shape are alignable.
-fn shape_key(event: &Event) -> String {
+/// Shared with `suggest`, which signs a whole recording by its sequence of shapes.
+pub(crate) fn shape_key(event: &Event) -> String {
     let mut keys: Vec<&str> = match &event.tool_input {
         serde_json::Value::Object(map) => map.keys().map(String::as_str).collect(),
         _ => Vec::new(),

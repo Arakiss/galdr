@@ -108,6 +108,9 @@ galdr evaluations --skill <name>   # show one skill's evaluator history
 galdr outcome usage --skill <name> --rec <rec_id> --outcome success
 galdr outcome label --skill <name> --label accepted --evaluator human
 galdr outcome list --skill <name>  # inspect captured usage/outcome labels
+galdr suggest                # skill opportunities: repeated tasks not yet distilled
+galdr suggest --min-count 1  # also surface single, undistilled recordings
+galdr bench                  # replay reliability: per-skill hit-rate from recorded outcomes
 galdr reindex                # rebuild the SQLite catalog from disk
 galdr doctor                 # diagnose config, catalog, daemon, skills, and hook wiring
 galdr setup claude --check   # check Claude Code PostToolUse hook wiring

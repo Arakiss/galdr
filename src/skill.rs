@@ -131,6 +131,12 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 - `galdr outcome usage --skill <name> --rec <rec_id> --outcome success|partial|failed` —
   after you later USE a distilled skill, record how it went. This is the training signal
   that tells galdr which skills are worth keeping; record it honestly.
+- `galdr suggest [--min-count <n>] [--top <n>] [--json]` — skill opportunities: repeated
+  tasks (same step shape across recordings) not yet distilled, deduped against installed
+  skills and ranked by repeatability. Turns "worth a skill?" into a queryable signal.
+- `galdr bench [--skill <name>] [--json]` — replay reliability: aggregates the outcomes
+  you recorded into a per-skill clean-replay hit-rate and effort cost (retries,
+  interventions). Measures the production hit-rate, not just the skill's shape.
 - `galdr validate [<skill> | --all | --file <path>] [--strict] [--json]` — run the
   install-time content gate over a skill (or a file): security (secrets, personal/PII
   paths, dangerous commands), practicality (a real, complete skill), and optimization

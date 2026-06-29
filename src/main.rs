@@ -4,6 +4,7 @@
 //! append-only span, and distills them into a reproducible skill. Local-first: the
 //! raw lives only in `~/.galdr` and nothing leaves the machine.
 
+mod bench;
 mod catalog;
 mod config;
 mod daemon;
@@ -24,6 +25,7 @@ mod record;
 mod setup;
 mod skill;
 mod span;
+mod suggest;
 mod summary;
 mod tui;
 mod validate;
@@ -221,6 +223,40 @@ enum Commands {
 
     /// Rebuild the SQLite catalog from the spans and recordings on disk.
     Reindex,
+
+    /// Measure replay reliability: per-skill hit-rate from recorded outcomes.
+    ///
+    /// galdr cannot run a natural-language skill (the agent does), so it cannot score
+    /// a replay itself; instead it aggregates the outcomes you record with
+    /// `galdr outcome usage` into a per-skill clean-replay hit-rate and an effort cost
+    /// (retries, manual interventions). It is the production hit-rate a capability test
+    /// cannot give. With no recorded outcomes it measures nothing and says so.
+    Bench {
+        /// Limit the report to one skill.
+        #[arg(long)]
+        skill: Option<String>,
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Suggest skill opportunities: repeated tasks not yet distilled into a skill.
+    ///
+    /// Signs every recording by the shape of its meaningful steps, groups the runs
+    /// that share a shape, dedupes against the skills already installed, and ranks
+    /// what is left by repeatability. Turns "skill opportunity" from a judgment call
+    /// into a number you can query. It only sees recorded sessions.
+    Suggest {
+        /// Emit machine-readable JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Show only the top N opportunities.
+        #[arg(long)]
+        top: Option<usize>,
+        /// Minimum number of recordings sharing a shape to surface it (default 2).
+        #[arg(long, default_value_t = 2)]
+        min_count: usize,
+    },
 
     /// Run the supervisor daemon (catalog indexer + control socket).
     Daemon {
@@ -449,6 +485,12 @@ fn main() {
         Commands::Parametrize { a, b, emit } => {
             exit_on_error(parametrize::parametrize(&a, &b, emit))
         }
+        Commands::Bench { skill, json } => exit_on_error(bench::run(skill.as_deref(), json)),
+        Commands::Suggest {
+            json,
+            top,
+            min_count,
+        } => exit_on_error(suggest::run(json, top, min_count)),
         Commands::Reindex => exit_on_error(cmd_reindex()),
         Commands::Daemon { action, detach } => match action {
             Some(DaemonAction::Status) => exit_on_error(cmd_daemon_status()),
