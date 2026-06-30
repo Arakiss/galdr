@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.14.0](https://github.com/Arakiss/galdr/compare/v0.13.0...v0.14.0) (2026-06-30)
+
+
+### Features
+
+* **hook:** keep ephemeral frames for vision-assisted authoring ([#50](https://github.com/Arakiss/galdr/issues/50)) ([aaee724](https://github.com/Arakiss/galdr/commit/aaee7248f0b2f84ff4d1ae3d7778c8b52d39fb24))
+* **hook:** record Cursor via its native postToolUse hook ([#58](https://github.com/Arakiss/galdr/issues/58)) ([7273466](https://github.com/Arakiss/galdr/commit/72734668a984cb31bbc1b9c60724695e15cb320d))
+* **tui:** hide setup/noise in the recording inspector ([#52](https://github.com/Arakiss/galdr/issues/52)) ([0061c3b](https://github.com/Arakiss/galdr/commit/0061c3b609a3a3cbea04eaf9ff557080dadf4e0a))
+* **tui:** lead with an Overview tab, eldr-style ([#54](https://github.com/Arakiss/galdr/issues/54)) ([7b35577](https://github.com/Arakiss/galdr/commit/7b355777a20860b7f459e991804d661def1c26bc))
+
+
+### Bug fixes
+
+* **setup:** spell out the Codex hook-trust step ([#53](https://github.com/Arakiss/galdr/issues/53)) ([1e4a312](https://github.com/Arakiss/galdr/commit/1e4a31294aabf82f7c5ae15c3ecee7d187d97883))
+
+
+### Documentation
+
+* re-record the demo gif for the current flow ([#62](https://github.com/Arakiss/galdr/issues/62)) ([fde5e8f](https://github.com/Arakiss/galdr/commit/fde5e8fda2160f7fda34e6d281928517c56d0851))
+* refresh the README for the current galdr ([#59](https://github.com/Arakiss/galdr/issues/59)) ([9f09e39](https://github.com/Arakiss/galdr/commit/9f09e397718010f9626302eee2f7be7c974a747d))
+* rewrite the README as a lean product page ([#61](https://github.com/Arakiss/galdr/issues/61)) ([72c9630](https://github.com/Arakiss/galdr/commit/72c963094b0e0df73470d22af6a122a833d057fa))
+
 ## [0.13.0](https://github.com/Arakiss/galdr/compare/v0.12.0...v0.13.0) (2026-06-30)
 
 
