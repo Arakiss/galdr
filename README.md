@@ -22,14 +22,18 @@ a reusable **skill** the agent can replay with judgment. It runs entirely on you
   <img src="assets/demo.gif" alt="galdr: record a task, distill it into a reusable skill" width="100%">
 </p>
 
-## Why tool calls, not pixels
+## What galdr records
 
-A screen-recording Record & Replay breaks the moment a button moves. An agent already emits
-a clean, structured trace of *what it did* — each tool call, its input, its result. galdr
-records that. The replay isn't a pixel re-enactment; it's a skill the agent reads and
-applies. That includes the agent's own browser and Computer-Use work — those clicks and
-types are tool calls too, so galdr keeps the action and drops the screenshot. The one thing
-out of scope is capturing a *human's* manual gestures in an app the agent never touched.
+Most of what an agent does has no screen to record. Running tests, editing files, git,
+deploys, API calls: each is already a structured tool call with its input and its result.
+galdr records that trace and distills it into a skill the agent reads and applies, not a
+verbatim re-run.
+
+Some apps only live behind a GUI, with no API or CLI. There the agent uses Computer Use,
+the same pixel-based control, and that is the right tool for the job. galdr captures those
+sessions too: a click and a keystroke are tool calls, so it keeps the action and, by
+default, drops the screenshot (you can opt in to keeping frames to help author the skill).
+The one thing out of scope is a *human's* manual gestures in an app the agent never touched.
 
 ## Quickstart
 
@@ -77,12 +81,13 @@ Codex). Record in one, reuse everywhere.
 
 ## Local and private
 
-- Everything lives on your machine, under `~/.galdr`. galdr makes **no network egress** — it
-  never phones home. The single opt-in exception, local-model distillation, talks **only to
-  loopback**.
+- Everything lives on your machine: recordings and the catalog under `~/.galdr`, distilled
+  skills in your local skill directories. galdr makes **no network egress**: it never phones
+  home. The single opt-in exception, local-model distillation, talks **only to loopback**.
 - An install-time gate **redacts secrets and personal paths**, and Computer-Use screenshots
-  are dropped (the action is kept, the pixels are not). A recording can still hold sensitive
-  command output, so keep that in mind before sharing one. See [SECURITY.md](SECURITY.md).
+  are dropped by default (the action is kept, the screenshot isn't, for privacy). A recording
+  can still hold sensitive command output, so keep that in mind before sharing one. See
+  [SECURITY.md](SECURITY.md).
 - The recorder never breaks your agent session: if it fails internally it records nothing and
   exits cleanly.
 
