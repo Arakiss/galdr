@@ -18,6 +18,7 @@ mod harness;
 mod hook;
 mod ipc;
 mod link;
+mod observe;
 mod outcome;
 mod parametrize;
 mod paths;
@@ -56,6 +57,12 @@ enum Commands {
     Rec {
         #[command(subcommand)]
         action: RecAction,
+    },
+
+    /// Record human-observation traces.
+    Observe {
+        #[command(subcommand)]
+        action: ObserveAction,
     },
 
     /// Distill a recording into a skill.
@@ -287,6 +294,18 @@ enum RecAction {
 }
 
 #[derive(Subcommand)]
+enum ObserveAction {
+    /// Record a deterministic human-observation fixture.
+    Synthetic {
+        /// Human-readable name for the recording.
+        name: String,
+        /// Synthetic fixture to record.
+        #[arg(long, value_enum, default_value_t = observe::ObserveFixture::BrowserForm)]
+        fixture: observe::ObserveFixture,
+    },
+}
+
+#[derive(Subcommand)]
 enum DaemonAction {
     /// Show whether the daemon socket is answering.
     Status,
@@ -421,6 +440,11 @@ fn main() {
             };
             exit_on_error(result);
         }
+        Commands::Observe { action } => match action {
+            ObserveAction::Synthetic { name, fixture } => {
+                exit_on_error(observe::synthetic(name, fixture))
+            }
+        },
         Commands::Distill {
             reference,
             from,

@@ -895,6 +895,68 @@ fn human_events_reindex_show_distill_and_export() {
 }
 
 #[test]
+fn observe_synthetic_records_a_human_trace() {
+    let sb = Sandbox::new();
+    let observed = sb.run(&[
+        "observe",
+        "synthetic",
+        "synthetic human form",
+        "--fixture",
+        "browser-form",
+    ]);
+    assert!(observed.status.success(), "{}", stderr(&observed));
+    let said = stdout(&observed);
+    assert!(said.contains("observed \"synthetic human form\""), "{said}");
+
+    let list = stdout(&sb.run(&["list"]));
+    assert!(list.contains("synthetic human form"), "{list}");
+    assert!(list.contains("4 steps"), "{list}");
+
+    let show = sb.run(&["show", "synthetic human form", "--json"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(detail["recording"]["name"], "synthetic human form");
+    assert_eq!(detail["steps"].as_array().unwrap().len(), 4);
+    assert!(
+        detail["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|step| step["event_kind"] == "human")
+    );
+    assert_eq!(
+        detail["steps"][0]["summary"],
+        "navigate https://example.test/issues/new"
+    );
+    assert_eq!(
+        detail["steps"][1]["summary"],
+        "type into \"Issue title\" (text, 24 chars)"
+    );
+    assert_eq!(
+        detail["steps"][2]["summary"],
+        "select \"Priority\" = \"High\""
+    );
+    assert_eq!(
+        detail["steps"][3]["summary"],
+        "click button \"Create issue\""
+    );
+
+    let distill = sb.run(&["distill", "synthetic human form", "--fast"]);
+    assert!(distill.status.success(), "{}", stderr(&distill));
+    let skill = sb.skill_md("galdr-synthetic-human-form");
+    assert!(skill.contains("browser workflow"), "{skill}");
+    assert!(
+        skill.contains("navigate https://example.test/issues/new"),
+        "{skill}"
+    );
+    assert!(skill.contains("select \"Priority\" = \"High\""), "{skill}");
+    assert!(
+        skill.contains("Confirm the created issue page is open or a success message appears."),
+        "{skill}"
+    );
+}
+
+#[test]
 fn recording_writes_keep_an_existing_catalog_current_without_a_daemon() {
     let sb = Sandbox::new();
     sb.record("first", &[BASH_STATUS]);
