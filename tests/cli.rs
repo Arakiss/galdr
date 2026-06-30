@@ -352,12 +352,21 @@ fn setup_codex_check_and_print_work() {
     let snippet = stdout(&sb.run(&["setup", "codex", "--print"]));
     assert!(snippet.contains("PostToolUse"));
     assert!(snippet.contains("galdr hook"));
+    // Codex skips an untrusted hook, so `--print` must spell out the trust step.
+    assert!(
+        snippet.contains("/hooks"),
+        "print must explain trusting the hook"
+    );
 
     let hooks = sb.home().join(".codex/hooks.json");
     std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
-    std::fs::write(&hooks, snippet).unwrap();
+    std::fs::write(
+        &hooks,
+        r#"{"hooks":{"PostToolUse":[{"matcher":".*","hooks":[{"type":"command","command":"galdr hook"}]}]}}"#,
+    )
+    .unwrap();
     let configured = stdout(&sb.run(&["setup", "codex", "--check"]));
-    assert!(configured.contains("is configured"));
+    assert!(configured.contains("is present"));
 }
 
 #[test]
