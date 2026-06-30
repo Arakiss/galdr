@@ -374,10 +374,26 @@ jobs:
       - name: Upload SBOM release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          gh release upload "${UPLOAD_TAG}" \
-            "dist/galdr-${UPLOAD_TAG}.cdx.json" \
-            --repo "${GITHUB_REPOSITORY}" --clobber
+          set -euo pipefail
+
+          asset_name="galdr-${UPLOAD_TAG}.cdx.json"
+          asset_path="dist/${asset_name}"
+
+          if gh release upload "${UPLOAD_TAG}" "${asset_path}" \
+            --repo "${GITHUB_REPOSITORY}" --clobber; then
+            exit 0
+          fi
+
+          if gh release view "${UPLOAD_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --json assets --jq '.assets[].name' | grep -Fxq "${asset_name}"; then
+            echo "::warning::SBOM asset ${asset_name} already exists on ${UPLOAD_TAG}; treating upload as idempotent success."
+            exit 0
+          fi
+
+          echo "::error::Failed to upload SBOM asset ${asset_name} to ${UPLOAD_TAG}."
+          exit 1
       - name: Attest SBOM provenance
         uses: actions/attest@v4
         with:
