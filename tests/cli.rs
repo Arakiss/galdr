@@ -370,6 +370,43 @@ fn setup_codex_check_and_print_work() {
 }
 
 #[test]
+fn setup_cursor_check_and_print_work() {
+    let sb = Sandbox::new();
+    let missing = stdout(&sb.run(&["setup", "cursor", "--check"]));
+    assert!(missing.contains("not found"));
+
+    let snippet = stdout(&sb.run(&["setup", "cursor", "--print"]));
+    assert!(snippet.contains("postToolUse"));
+    assert!(snippet.contains("galdr hook"));
+
+    let hooks = sb.home().join(".cursor/hooks.json");
+    std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
+    std::fs::write(&hooks, snippet).unwrap();
+    let configured = stdout(&sb.run(&["setup", "cursor", "--check"]));
+    assert!(configured.contains("is present"));
+}
+
+#[test]
+fn a_cursor_event_records_with_mapped_fields() {
+    // Cursor's postToolUse payload renames two fields: `tool_output` (a JSON-stringified
+    // string) for the result, and `conversation_id` for the session. The sensor maps both.
+    let sb = Sandbox::new();
+    let cursor_event = r#"{"tool_name":"Bash","tool_input":{"command":"ls"},"tool_output":"{\"exit_code\":0}","conversation_id":"conv-abc","cwd":"/x"}"#;
+    let id = sb.record("cursor task", &[cursor_event]);
+    assert_eq!(sb.span_lines(&id), 1);
+    let span = std::fs::read_to_string(sb.home().join(".galdr/spans").join(format!("{id}.jsonl")))
+        .unwrap();
+    assert!(
+        span.contains(r#""exit_code":0"#),
+        "tool_output is parsed into tool_response: {span}"
+    );
+    assert!(
+        span.contains("conv-abc"),
+        "conversation_id maps to session_id: {span}"
+    );
+}
+
+#[test]
 fn distilled_skill_is_linked_into_installed_harnesses() {
     // The make-or-break for "R/R for Claude Code": a distilled skill must become
     // discoverable in the harness it was recorded in, not dead-end in the open

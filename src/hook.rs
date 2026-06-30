@@ -23,10 +23,17 @@ struct HookInput {
     tool_input: serde_json::Value,
     #[serde(default)]
     tool_response: serde_json::Value,
+    /// Cursor names the result field `tool_output` (a JSON-stringified string), not
+    /// `tool_response`; mapped over when the latter is absent.
+    #[serde(default)]
+    tool_output: Option<serde_json::Value>,
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
+    /// Cursor names the session `conversation_id`, not `session_id`.
+    #[serde(default)]
+    conversation_id: Option<String>,
     #[serde(default)]
     transcript_path: Option<String>,
 }
@@ -88,9 +95,11 @@ pub fn run() -> Result<()> {
         seq: span::count_events(&span_path),
         tool_name: input.tool_name,
         tool_input: input.tool_input,
-        tool_response: input.tool_response,
+        // Cursor's `postToolUse` renames these two fields; map them so one `galdr hook`
+        // command records every harness (Claude Code, Codex, Cursor) unchanged.
+        tool_response: cursor_response(input.tool_response, input.tool_output),
         cwd: input.cwd,
-        session_id: input.session_id,
+        session_id: input.session_id.or(input.conversation_id),
     };
 
     let capture = config::Config::load_capture();
@@ -447,6 +456,26 @@ fn decode_base64(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Normalizes the tool result across harnesses. Claude Code and Codex send
+/// `tool_response` (a JSON object); Cursor sends `tool_output` (the same payload, but
+/// JSON-stringified). Prefer a present `tool_response`; otherwise adopt `tool_output`,
+/// parsed back into JSON when it is a valid JSON string (else kept verbatim).
+fn cursor_response(
+    tool_response: serde_json::Value,
+    tool_output: Option<serde_json::Value>,
+) -> serde_json::Value {
+    if !tool_response.is_null() {
+        return tool_response;
+    }
+    match tool_output {
+        Some(serde_json::Value::String(s)) => {
+            serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
+        }
+        Some(other) => other,
+        None => serde_json::Value::Null,
+    }
+}
+
 fn apply_response_cap(event: &mut span::Event, max_chars: Option<usize>) {
     let Some(max_chars) = max_chars else {
         return;
@@ -467,6 +496,36 @@ fn apply_response_cap(event: &mut span::Event, max_chars: Option<usize>) {
 mod tests {
     use super::*;
     use crate::record::ActiveRec;
+
+    #[test]
+    fn cursor_response_maps_tool_output_to_tool_response() {
+        // Claude Code / Codex send `tool_response`; it wins when present.
+        assert_eq!(
+            cursor_response(
+                serde_json::json!({ "exit_code": 0 }),
+                Some(serde_json::json!("ignored"))
+            ),
+            serde_json::json!({ "exit_code": 0 })
+        );
+        // Cursor sends `tool_output` as a JSON-stringified string → parsed back to JSON.
+        assert_eq!(
+            cursor_response(
+                serde_json::Value::Null,
+                Some(serde_json::json!("{\"ok\":true}"))
+            ),
+            serde_json::json!({ "ok": true })
+        );
+        // A non-JSON tool_output string is kept verbatim rather than dropped.
+        assert_eq!(
+            cursor_response(serde_json::Value::Null, Some(serde_json::json!("plain"))),
+            serde_json::json!("plain")
+        );
+        // Nothing present → null.
+        assert_eq!(
+            cursor_response(serde_json::Value::Null, None),
+            serde_json::Value::Null
+        );
+    }
 
     #[test]
     fn strips_a_base64_screenshot_but_keeps_the_action() {

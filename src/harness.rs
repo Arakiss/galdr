@@ -115,6 +115,7 @@ fn info_for(k: &Known, home: Option<&PathBuf>) -> HarnessInfo {
     let galdr_hook = match k.key {
         "claude" => setup::claude_hook_configured(),
         "codex" => setup::codex_hook_configured(),
+        "cursor" => setup::cursor_hook_configured(),
         _ => None,
     };
     let skills_dir = home
@@ -157,14 +158,12 @@ mod tests {
         let found = detect();
         assert_eq!(found.len(), KNOWN.len());
         assert!(found.iter().any(|h| h.key == "claude"));
-        // galdr can wire a hook into Claude Code and Codex, so their flag may be Some
-        // (depending on whether a settings/hooks file exists); the field is always
-        // well-formed and the entries are present.
+        // galdr can wire a hook into Claude Code, Codex, and Cursor (all have a native
+        // hooks file), so their flag may be Some depending on whether the file exists;
+        // the field is always well-formed and the entries are present.
         let _ = found.iter().find(|h| h.key == "claude").unwrap().galdr_hook;
         let _ = found.iter().find(|h| h.key == "codex").unwrap().galdr_hook;
-        // A harness galdr can't wire (no known hook file) never carries a flag.
-        let cursor = found.iter().find(|h| h.key == "cursor").unwrap();
-        assert!(cursor.galdr_hook.is_none());
+        let _ = found.iter().find(|h| h.key == "cursor").unwrap().galdr_hook;
     }
 
     #[test]
