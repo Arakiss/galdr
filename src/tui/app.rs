@@ -6,7 +6,7 @@ use ratatui::widgets::TableState;
 use super::data::Catalog;
 use crate::catalog::{self, RecordingDetail, RecordingRow, SkillRow};
 use crate::harness::{self, HarnessInfo};
-use crate::{distill, record};
+use crate::{distill, export, link, outcome, paths, record, validate};
 
 const PAGE: usize = 10;
 const OVERLAY_PAGE: u16 = 12;
@@ -273,6 +273,7 @@ impl<C: Catalog> App<C> {
             }
             KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.enter_preview(),
             KeyCode::Char('d') => self.distill_selected(),
+            KeyCode::Char('e') => self.export_selected(),
             KeyCode::Char('o') => self.show_span_path(),
             KeyCode::Char('r') => self.open_overlay(Overlay::Replay),
             _ => {}
@@ -337,6 +338,9 @@ impl<C: Catalog> App<C> {
                 page(&mut self.skill_state, len, -(PAGE as isize));
                 self.sync_preview();
             }
+            KeyCode::Char('l') => self.link_selected(),
+            KeyCode::Char('v') => self.validate_selected(),
+            KeyCode::Char('O') => self.outcome_selected(),
             _ => {}
         }
     }
@@ -426,6 +430,100 @@ impl<C: Catalog> App<C> {
                 self.sync_preview();
             }
             Err(err) => self.status = format!("distill failed: {err}"),
+        }
+    }
+
+    /// Links the selected skill into every installed harness (the same safe, local
+    /// operation as `galdr link`).
+    fn link_selected(&mut self) {
+        let Some(skill) = self.selected_skill() else {
+            return;
+        };
+        let name = skill.skill_name.clone();
+        match link::link_skill(&name) {
+            Ok(results) => {
+                let reached = results
+                    .iter()
+                    .filter(|r| {
+                        !matches!(
+                            r.status,
+                            link::LinkStatus::Conflict | link::LinkStatus::Failed
+                        )
+                    })
+                    .count();
+                self.status = format!("linked {name} into {reached} harness(es)");
+                let _ = self.catalog.refresh();
+            }
+            Err(err) => self.status = format!("link failed: {err}"),
+        }
+    }
+
+    /// Runs the install-time content gate over the selected skill and reports it.
+    fn validate_selected(&mut self) {
+        let Some(skill) = self.selected_skill() else {
+            return;
+        };
+        let name = skill.skill_name.clone();
+        let draft = matches!(
+            skill.status.as_str(),
+            catalog::STATUS_DRAFT | catalog::STATUS_PARAM_DRAFT
+        );
+        match std::fs::read_to_string(&skill.skill_path) {
+            Ok(md) => {
+                let ctx = validate::ValidationCtx::new(draft, false);
+                let report = validate::validate_skill(&md, &ctx);
+                self.status = if report.has_blocking(false) {
+                    format!(
+                        "⚠ {name}: {} blocking finding(s) — run `galdr validate {name}`",
+                        report.blocking_count(false)
+                    )
+                } else {
+                    format!("✓ {name} passes the content gate")
+                };
+            }
+            Err(err) => self.status = format!("validate: cannot read {name}: {err}"),
+        }
+    }
+
+    /// Records a success outcome for the selected skill against its provenance
+    /// recording — the replay-reliability signal `galdr bench` reads.
+    fn outcome_selected(&mut self) {
+        let Some(skill) = self.selected_skill() else {
+            return;
+        };
+        let name = skill.skill_name.clone();
+        let Some(rec_id) = skill.rec_id.clone() else {
+            self.status = format!("{name}: no provenance recording to attach an outcome to");
+            return;
+        };
+        match outcome::record_usage(outcome::UsageInput {
+            skill_name: name.clone(),
+            rec_id,
+            task_kind: None,
+            outcome: "success".to_string(),
+            retries: 0,
+            manual_intervention_count: 0,
+            notes: Some("recorded from the TUI".to_string()),
+        }) {
+            Ok(_) => self.status = format!("recorded a success outcome for {name}"),
+            Err(err) => self.status = format!("outcome failed: {err}"),
+        }
+    }
+
+    /// Exports the selected recording (metadata + summaries, no raw payloads) to a
+    /// predictable directory under the galdr root.
+    fn export_selected(&mut self) {
+        let Some(rec) = self.selected_recording() else {
+            return;
+        };
+        let id = rec.rec_id.clone();
+        let Ok(out) = paths::galdr_root().map(|r| r.join("exports").join(&id)) else {
+            self.status = "export: cannot resolve the galdr root".to_string();
+            return;
+        };
+        match export::export_recording(&id, &out, false, false) {
+            Ok(()) => self.status = format!("exported to {}", out.display()),
+            Err(err) => self.status = format!("export failed: {err}"),
         }
     }
 
