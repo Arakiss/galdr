@@ -11,17 +11,33 @@ use crate::{distill, export, link, outcome, paths, record, validate};
 const PAGE: usize = 10;
 const OVERLAY_PAGE: u16 = 12;
 
-/// A focusable list panel in the sidebar. The preview pane follows the focused
-/// panel's selection — the lazygit model: several lists at once, detail always visible.
+/// A tab in the TUI. The Overview is the landing — a dashboard of what galdr has and
+/// what needs attention; the other three are a list + a live preview of its selection.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
+    Overview,
     Recordings,
     Skills,
     Harnesses,
 }
 
 impl Panel {
-    pub const ALL: [Panel; 3] = [Panel::Recordings, Panel::Skills, Panel::Harnesses];
+    pub const ALL: [Panel; 4] = [
+        Panel::Overview,
+        Panel::Recordings,
+        Panel::Skills,
+        Panel::Harnesses,
+    ];
+
+    /// The tab's short label, shown in the tab bar.
+    pub fn label(self) -> &'static str {
+        match self {
+            Panel::Overview => "Overview",
+            Panel::Recordings => "Recordings",
+            Panel::Skills => "Skills",
+            Panel::Harnesses => "Harnesses",
+        }
+    }
 
     fn index(self) -> usize {
         Panel::ALL.iter().position(|t| *t == self).unwrap_or(0)
@@ -90,7 +106,7 @@ impl<C: Catalog> App<C> {
         let skills = catalog.skills();
         let mut app = Self {
             catalog,
-            focus: Panel::Recordings,
+            focus: Panel::Overview,
             preview_focus: false,
             preview_md: String::new(),
             preview_scroll: 0,
@@ -126,6 +142,41 @@ impl<C: Catalog> App<C> {
             .iter()
             .filter(|s| s.origin == catalog::ORIGIN_GALDR)
             .count()
+    }
+
+    /// Skills from other harnesses that merely share the directory.
+    pub fn external_skill_count(&self) -> usize {
+        self.skills.len() - self.galdr_skill_count()
+    }
+
+    /// galdr skills still awaiting authoring (a faithful but mechanical draft).
+    pub fn draft_count(&self) -> usize {
+        self.skills
+            .iter()
+            .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+            .filter(|s| {
+                matches!(
+                    s.status.as_str(),
+                    catalog::STATUS_DRAFT | catalog::STATUS_PARAM_DRAFT
+                )
+            })
+            .count()
+    }
+
+    /// Recordings not yet turned into a skill — candidates for `galdr distill`.
+    pub fn undistilled_count(&self) -> usize {
+        self.recordings.iter().filter(|r| !r.distilled).count()
+    }
+
+    /// Mean readiness across galdr skills, or `None` when there are none.
+    pub fn avg_readiness(&self) -> Option<i64> {
+        let scores: Vec<i64> = self
+            .skills
+            .iter()
+            .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+            .map(|s| s.readiness_score)
+            .collect();
+        (!scores.is_empty()).then(|| scores.iter().sum::<i64>() / scores.len() as i64)
     }
 
     /// Recomputes the filtered views and keeps every selection valid. Skills are
@@ -179,7 +230,7 @@ impl<C: Catalog> App<C> {
             KeyCode::Char('?') => return self.open_overlay(Overlay::Help),
             KeyCode::Tab => return self.switch_focus(self.focus.cycle(1)),
             KeyCode::BackTab => return self.switch_focus(self.focus.cycle(-1)),
-            KeyCode::Char(c @ '1'..='3') => {
+            KeyCode::Char(c @ '1'..='4') => {
                 let idx = c as usize - '1' as usize;
                 return self.switch_focus(Panel::ALL[idx]);
             }
@@ -190,6 +241,12 @@ impl<C: Catalog> App<C> {
             return self.on_key_preview(key);
         }
         match self.focus {
+            // The Overview is a dashboard: Enter jumps into the recordings list to act.
+            Panel::Overview => {
+                if matches!(key.code, KeyCode::Enter | KeyCode::Right) {
+                    self.switch_focus(Panel::Recordings);
+                }
+            }
             Panel::Recordings => self.on_key_recordings(key),
             Panel::Skills => self.on_key_skills(key),
             Panel::Harnesses => self.on_key_harnesses(key),
@@ -396,6 +453,8 @@ impl<C: Catalog> App<C> {
     /// recording's steps, or a skill's `SKILL.md`. Cheap and called after every move.
     fn sync_preview(&mut self) {
         match self.focus {
+            // The Overview reads its aggregates at render time — nothing to preload.
+            Panel::Overview => {}
             Panel::Recordings => {
                 if let Some(rec) = self.selected_recording() {
                     let id = rec.rec_id.clone();
@@ -443,6 +502,7 @@ impl<C: Catalog> App<C> {
     /// `SKILL.md`.
     fn enter_preview(&mut self) {
         match self.focus {
+            Panel::Overview => {}
             Panel::Recordings => {
                 let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
                 if steps == 0 {
