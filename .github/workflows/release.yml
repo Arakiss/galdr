@@ -11,6 +11,11 @@ on:
         description: "Existing tag to retroactively build + attach binaries to (e.g. v0.2.0)"
         required: true
         type: string
+      evidence_only:
+        description: "Only regenerate and attest release evidence for an existing tag"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -236,7 +241,7 @@ jobs:
     name: build (${{ matrix.target }})
     if: >
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'workflow_dispatch' && inputs.evidence_only != true)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     permissions:
@@ -340,8 +345,11 @@ jobs:
   release-evidence:
     name: release evidence
     if: >
-      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || github.event_name == 'workflow_dispatch'
+      always()
+      && (
+        (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.build-binaries.result == 'success')
+        || (github.event_name == 'workflow_dispatch' && (inputs.evidence_only == true || needs.build-binaries.result == 'success'))
+      )
     needs: build-binaries
     runs-on: ubuntu-latest
     permissions:
@@ -389,6 +397,10 @@ jobs:
           if gh release view "${UPLOAD_TAG}" --repo "${GITHUB_REPOSITORY}" \
             --json assets --jq '.assets[].name' | grep -Fxq "${asset_name}"; then
             echo "::warning::SBOM asset ${asset_name} already exists on ${UPLOAD_TAG}; treating upload as idempotent success."
+            existing_dir="$(mktemp -d)"
+            gh release download "${UPLOAD_TAG}" --repo "${GITHUB_REPOSITORY}" \
+              --pattern "${asset_name}" --dir "${existing_dir}"
+            cp "${existing_dir}/${asset_name}" "${asset_path}"
             exit 0
           fi
 
@@ -407,7 +419,7 @@ jobs:
     name: publish to crates.io
     if: >
       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-      || github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'workflow_dispatch' && inputs.evidence_only != true)
     needs: build-binaries
     runs-on: ubuntu-latest
     timeout-minutes: 20
