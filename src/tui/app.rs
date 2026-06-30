@@ -11,35 +11,26 @@ use crate::{distill, record};
 const PAGE: usize = 10;
 const OVERLAY_PAGE: u16 = 12;
 
-/// The top-level tabs.
+/// A focusable list panel in the sidebar. The preview pane follows the focused
+/// panel's selection — the lazygit model: several lists at once, detail always visible.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    Overview,
+pub enum Panel {
     Recordings,
     Skills,
     Harnesses,
 }
 
-impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Recordings, Tab::Skills, Tab::Harnesses];
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Tab::Overview => "Overview",
-            Tab::Recordings => "Recordings",
-            Tab::Skills => "Skills",
-            Tab::Harnesses => "Harnesses",
-        }
-    }
+impl Panel {
+    pub const ALL: [Panel; 3] = [Panel::Recordings, Panel::Skills, Panel::Harnesses];
 
     fn index(self) -> usize {
-        Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
+        Panel::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
 
-    fn cycle(self, delta: isize) -> Tab {
-        let len = Tab::ALL.len() as isize;
+    fn cycle(self, delta: isize) -> Panel {
+        let len = Panel::ALL.len() as isize;
         let next = (self.index() as isize + delta).rem_euclid(len) as usize;
-        Tab::ALL[next]
+        Panel::ALL[next]
     }
 }
 
@@ -55,9 +46,13 @@ pub enum Overlay {
 
 pub struct App<C: Catalog> {
     pub catalog: C,
-    pub tab: Tab,
-    /// True while the inspector (a recording's steps) is open over the Recordings tab.
-    pub in_detail: bool,
+    /// Which sidebar list is focused; the preview follows its selection.
+    pub focus: Panel,
+    /// True while the preview pane itself is focused (stepping through a recording's
+    /// steps), so j/k move inside the preview instead of the sidebar list.
+    pub preview_focus: bool,
+    /// Rendered text of the selected skill's `SKILL.md`, shown in the preview.
+    pub preview_md: String,
 
     pub recordings: Vec<RecordingRow>,
     pub skills: Vec<SkillRow>,
@@ -90,8 +85,9 @@ impl<C: Catalog> App<C> {
         let skills = catalog.skills();
         let mut app = Self {
             catalog,
-            tab: Tab::Overview,
-            in_detail: false,
+            focus: Panel::Recordings,
+            preview_focus: false,
+            preview_md: String::new(),
             rec_view: recordings.clone(),
             skill_view: skills.clone(),
             recordings,
@@ -113,6 +109,7 @@ impl<C: Catalog> App<C> {
             should_quit: false,
         };
         app.reproject();
+        app.sync_preview();
         app
     }
 
@@ -122,10 +119,6 @@ impl<C: Catalog> App<C> {
             .iter()
             .filter(|s| s.origin == catalog::ORIGIN_GALDR)
             .count()
-    }
-
-    pub fn distilled_count(&self) -> usize {
-        self.recordings.iter().filter(|r| r.distilled).count()
     }
 
     /// Recomputes the filtered views and keeps every selection valid. Skills are
@@ -177,31 +170,30 @@ impl<C: Catalog> App<C> {
                 return;
             }
             KeyCode::Char('?') => return self.open_overlay(Overlay::Help),
-            KeyCode::Tab => return self.switch_tab(self.tab.cycle(1)),
-            KeyCode::BackTab => return self.switch_tab(self.tab.cycle(-1)),
-            KeyCode::Char(c @ '1'..='4') => {
+            KeyCode::Tab => return self.switch_focus(self.focus.cycle(1)),
+            KeyCode::BackTab => return self.switch_focus(self.focus.cycle(-1)),
+            KeyCode::Char(c @ '1'..='3') => {
                 let idx = c as usize - '1' as usize;
-                return self.switch_tab(Tab::ALL[idx]);
+                return self.switch_focus(Panel::ALL[idx]);
             }
             _ => {}
         }
-        if self.tab == Tab::Recordings && self.in_detail {
-            return self.on_key_detail(key);
+        // When the preview pane is focused, keys drive it (stepping through a recording).
+        if self.preview_focus {
+            return self.on_key_preview(key);
         }
-        match self.tab {
-            Tab::Overview => self.on_key_overview(key),
-            Tab::Recordings => self.on_key_recordings(key),
-            Tab::Skills => self.on_key_skills(key),
-            Tab::Harnesses => self.on_key_harnesses(key),
+        match self.focus {
+            Panel::Recordings => self.on_key_recordings(key),
+            Panel::Skills => self.on_key_skills(key),
+            Panel::Harnesses => self.on_key_harnesses(key),
         }
     }
 
-    fn switch_tab(&mut self, tab: Tab) {
-        self.tab = tab;
-        self.in_detail = false;
+    fn switch_focus(&mut self, panel: Panel) {
+        self.focus = panel;
+        self.preview_focus = false;
         self.status.clear();
-        // A filter is meaningful only on the list tabs; keep it but it simply has
-        // no effect elsewhere.
+        self.sync_preview();
     }
 
     fn on_key_filter(&mut self, key: KeyEvent) {
@@ -247,34 +239,39 @@ impl<C: Catalog> App<C> {
         }
     }
 
-    fn on_key_overview(&mut self, key: KeyEvent) {
-        // The overview is a dashboard; Enter jumps into Recordings to act.
-        if matches!(
-            key.code,
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right
-        ) {
-            self.switch_tab(Tab::Recordings);
-        }
-    }
-
     fn on_key_recordings(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('/') => self.filter_mode = true,
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
                 self.reproject();
+                self.sync_preview();
             }
-            KeyCode::Char('j') | KeyCode::Down => step(&mut self.rec_state, self.rec_view.len(), 1),
-            KeyCode::Char('k') | KeyCode::Up => step(&mut self.rec_state, self.rec_view.len(), -1),
+            KeyCode::Char('j') | KeyCode::Down => {
+                step(&mut self.rec_state, self.rec_view.len(), 1);
+                self.sync_preview();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                step(&mut self.rec_state, self.rec_view.len(), -1);
+                self.sync_preview();
+            }
             KeyCode::Char('g') | KeyCode::Home => {
-                jump(&mut self.rec_state, self.rec_view.len(), true)
+                jump(&mut self.rec_state, self.rec_view.len(), true);
+                self.sync_preview();
             }
             KeyCode::Char('G') | KeyCode::End => {
-                jump(&mut self.rec_state, self.rec_view.len(), false)
+                jump(&mut self.rec_state, self.rec_view.len(), false);
+                self.sync_preview();
             }
-            KeyCode::PageDown => page(&mut self.rec_state, self.rec_view.len(), PAGE as isize),
-            KeyCode::PageUp => page(&mut self.rec_state, self.rec_view.len(), -(PAGE as isize)),
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.open_detail(),
+            KeyCode::PageDown => {
+                page(&mut self.rec_state, self.rec_view.len(), PAGE as isize);
+                self.sync_preview();
+            }
+            KeyCode::PageUp => {
+                page(&mut self.rec_state, self.rec_view.len(), -(PAGE as isize));
+                self.sync_preview();
+            }
+            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.enter_preview(),
             KeyCode::Char('d') => self.distill_selected(),
             KeyCode::Char('o') => self.show_span_path(),
             KeyCode::Char('r') => self.open_overlay(Overlay::Replay),
@@ -282,13 +279,13 @@ impl<C: Catalog> App<C> {
         }
     }
 
-    fn on_key_detail(&mut self, key: KeyEvent) {
+    fn on_key_preview(&mut self, key: KeyEvent) {
         let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
         match key.code {
             KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
-                self.in_detail = false;
-                self.detail = None;
-                self.raw.clear();
+                // Leave the preview pane; the sidebar selection (and its live preview)
+                // stays put.
+                self.preview_focus = false;
                 self.status.clear();
             }
             KeyCode::Char('j') | KeyCode::Down => step(&mut self.detail_state, steps, 1),
@@ -308,69 +305,107 @@ impl<C: Catalog> App<C> {
     }
 
     fn on_key_skills(&mut self, key: KeyEvent) {
+        let len = self.skill_view.len();
         match key.code {
             KeyCode::Char('/') => self.filter_mode = true,
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
                 self.reproject();
+                self.sync_preview();
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                step(&mut self.skill_state, self.skill_view.len(), 1)
+                step(&mut self.skill_state, len, 1);
+                self.sync_preview();
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                step(&mut self.skill_state, self.skill_view.len(), -1)
+                step(&mut self.skill_state, len, -1);
+                self.sync_preview();
             }
             KeyCode::Char('g') | KeyCode::Home => {
-                jump(&mut self.skill_state, self.skill_view.len(), true)
+                jump(&mut self.skill_state, len, true);
+                self.sync_preview();
             }
             KeyCode::Char('G') | KeyCode::End => {
-                jump(&mut self.skill_state, self.skill_view.len(), false)
+                jump(&mut self.skill_state, len, false);
+                self.sync_preview();
             }
-            KeyCode::PageDown => page(&mut self.skill_state, self.skill_view.len(), PAGE as isize),
-            KeyCode::PageUp => page(
-                &mut self.skill_state,
-                self.skill_view.len(),
-                -(PAGE as isize),
-            ),
+            KeyCode::PageDown => {
+                page(&mut self.skill_state, len, PAGE as isize);
+                self.sync_preview();
+            }
+            KeyCode::PageUp => {
+                page(&mut self.skill_state, len, -(PAGE as isize));
+                self.sync_preview();
+            }
             _ => {}
         }
     }
 
     fn on_key_harnesses(&mut self, key: KeyEvent) {
+        let len = self.harnesses.len();
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                step(&mut self.harness_state, self.harnesses.len(), 1)
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                step(&mut self.harness_state, self.harnesses.len(), -1)
-            }
-            KeyCode::Char('g') | KeyCode::Home => {
-                jump(&mut self.harness_state, self.harnesses.len(), true)
-            }
-            KeyCode::Char('G') | KeyCode::End => {
-                jump(&mut self.harness_state, self.harnesses.len(), false)
-            }
+            KeyCode::Char('j') | KeyCode::Down => step(&mut self.harness_state, len, 1),
+            KeyCode::Char('k') | KeyCode::Up => step(&mut self.harness_state, len, -1),
+            KeyCode::Char('g') | KeyCode::Home => jump(&mut self.harness_state, len, true),
+            KeyCode::Char('G') | KeyCode::End => jump(&mut self.harness_state, len, false),
             _ => {}
         }
+    }
+
+    /// One concrete skill, the selection in the Skills panel.
+    fn selected_skill(&self) -> Option<&SkillRow> {
+        self.skill_state
+            .selected()
+            .and_then(|i| self.skill_view.get(i))
+    }
+
+    /// Reprojects the preview pane onto the focused panel's current selection: a
+    /// recording's steps, or a skill's `SKILL.md`. Cheap and called after every move.
+    fn sync_preview(&mut self) {
+        match self.focus {
+            Panel::Recordings => {
+                if let Some(rec) = self.selected_recording() {
+                    let id = rec.rec_id.clone();
+                    self.detail = self.catalog.detail(&id);
+                    self.raw = self.catalog.raw_events(&id);
+                } else {
+                    self.detail = None;
+                    self.raw.clear();
+                }
+                let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
+                clamp_selection(&mut self.detail_state, steps);
+                if steps > 0 && self.detail_state.selected().is_none() {
+                    self.detail_state.select(Some(0));
+                }
+            }
+            Panel::Skills => {
+                self.preview_md = self
+                    .selected_skill()
+                    .and_then(|s| std::fs::read_to_string(&s.skill_path).ok())
+                    .unwrap_or_default();
+            }
+            Panel::Harnesses => {}
+        }
+    }
+
+    /// Focuses the preview pane to step through the selected recording.
+    fn enter_preview(&mut self) {
+        if self.focus != Panel::Recordings {
+            return;
+        }
+        let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
+        if steps == 0 {
+            return;
+        }
+        if self.detail_state.selected().is_none() {
+            self.detail_state.select(Some(0));
+        }
+        self.preview_focus = true;
     }
 
     fn open_overlay(&mut self, overlay: Overlay) {
         self.overlay = Some(overlay);
         self.overlay_scroll = 0;
-    }
-
-    fn open_detail(&mut self) {
-        let Some(rec) = self.selected_recording() else {
-            return;
-        };
-        let id = rec.rec_id.clone();
-        self.detail = self.catalog.detail(&id);
-        self.raw = self.catalog.raw_events(&id);
-        self.detail_state = TableState::default();
-        if self.detail.as_ref().is_some_and(|d| !d.steps.is_empty()) {
-            self.detail_state.select(Some(0));
-        }
-        self.in_detail = true;
     }
 
     /// Distills a complete skill for the selected recording through the sanctioned
@@ -388,13 +423,14 @@ impl<C: Catalog> App<C> {
                 self.recordings = self.catalog.recordings();
                 self.skills = self.catalog.skills();
                 self.reproject();
+                self.sync_preview();
             }
             Err(err) => self.status = format!("distill failed: {err}"),
         }
     }
 
     fn show_span_path(&mut self) {
-        let id = if self.in_detail {
+        let id = if self.preview_focus {
             self.detail.as_ref().map(|d| d.recording.rec_id.clone())
         } else {
             self.selected_recording().map(|r| r.rec_id.clone())
