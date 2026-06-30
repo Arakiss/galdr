@@ -415,6 +415,7 @@ jobs:
             version="${GITHUB_REF#refs/tags/}"
           fi
           version="${version#v}"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
           if curl -fsSL -H "User-Agent: galdr-release" "https://crates.io/api/v1/crates/galdr/${version}" >/dev/null 2>&1; then
             echo "already=true" >> "$GITHUB_OUTPUT"
             echo "galdr ${version} is already on crates.io — nothing to publish."
@@ -429,4 +430,32 @@ jobs:
         if: steps.state.outputs.already == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
-        run: cargo publish
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${{ steps.state.outputs.version }}"
+          publish_log="$(mktemp)"
+          trap 'rm -f "${publish_log}"' EXIT
+
+          set +e
+          cargo publish 2>&1 | tee "${publish_log}"
+          status="${PIPESTATUS[0]}"
+          set -e
+
+          if [[ "${status}" == "0" ]]; then
+            exit 0
+          fi
+
+          if grep -Fq "is already uploaded" "${publish_log}"; then
+            echo "cargo publish reported galdr ${version} is already uploaded; verifying crates.io state."
+            for _ in {1..12}; do
+              if curl -fsSL -H "User-Agent: galdr-release" "https://crates.io/api/v1/crates/galdr/${version}" >/dev/null 2>&1; then
+                echo "galdr ${version} is present on crates.io; treating publish as idempotent success."
+                exit 0
+              fi
+              sleep 5
+            done
+          fi
+
+          exit "${status}"
