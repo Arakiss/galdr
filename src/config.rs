@@ -52,6 +52,14 @@ pub struct CaptureConfig {
     /// and risks leaking on-screen content. The action fields are always kept.
     #[serde(default = "default_strip_screenshots")]
     pub strip_screenshots: bool,
+    /// Keep stripped screenshots as **ephemeral** PNG frames under
+    /// `~/.galdr/frames/<rec_id>/` so the authoring step can see the screen and write
+    /// better semantic steps for a GUI skill. Off by default — pixels on disk are
+    /// opt-in. The frames are never in the span, the skill, or an export; they are
+    /// purged when a final skill installs from the recording. Scaffolding to *produce*
+    /// the skill, not part of it.
+    #[serde(default)]
+    pub keep_frames: bool,
 }
 
 fn default_strip_screenshots() -> bool {
@@ -65,6 +73,7 @@ impl Default for CaptureConfig {
             deny_cwd_prefixes: Vec::new(),
             max_response_chars: None,
             strip_screenshots: true,
+            keep_frames: false,
         }
     }
 }

@@ -79,6 +79,17 @@ pub fn recordings_dir() -> Result<PathBuf> {
     Ok(galdr_root()?.join("recordings"))
 }
 
+/// Ephemeral authoring frames root: `~/.galdr/frames`. Opt-in (`capture.keep_frames`),
+/// never part of the span or a skill, purged when a final skill installs.
+pub fn frames_root() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("frames"))
+}
+
+/// A recording's ephemeral frames: `~/.galdr/frames/<rec_id>`.
+pub fn frames_dir(rec_id: &str) -> Result<PathBuf> {
+    Ok(frames_root()?.join(rec_id))
+}
+
 /// Skill usage and outcome-label directory: `~/.galdr/outcomes`.
 pub fn outcomes_dir() -> Result<PathBuf> {
     Ok(galdr_root()?.join("outcomes"))
