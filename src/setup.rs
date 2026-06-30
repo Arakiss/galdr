@@ -33,6 +33,19 @@ const CODEX_HOOK_SNIPPET: &str = r#"{
   }
 }"#;
 
+// Cursor's native hooks (Cursor 1.7+) use a versioned container and camelCase events.
+// The `postToolUse` event fires after every tool call. Cursor's payload is Claude-Code-
+// styled but renames two fields (`tool_output` for `tool_response`, `conversation_id`
+// for `session_id`); galdr's sensor maps them, so the same `galdr hook` command works.
+const CURSOR_HOOK_SNIPPET: &str = r#"{
+  "version": 1,
+  "hooks": {
+    "postToolUse": [
+      { "type": "command", "command": "galdr hook" }
+    ]
+  }
+}"#;
+
 /// The step every Codex hook needs and `setup` used to omit: Codex skips an untrusted
 /// hook entirely, so merging the snippet is not enough.
 fn print_codex_trust_note() {
@@ -111,6 +124,41 @@ pub fn codex_print() {
 
 pub fn codex_hook_configured() -> Option<bool> {
     let path = paths::codex_hooks().ok()?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<serde_json::Value>(&contents)
+        .map(|value| has_galdr_hook(&value))
+        .ok()
+}
+
+pub fn cursor_check() -> Result<()> {
+    let path = paths::cursor_hooks()?;
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        println!("Cursor hooks file not found: {}", path.display());
+        println!("Run `galdr setup cursor --print` to see the hook snippet.");
+        return Ok(());
+    };
+    let configured = serde_json::from_str::<serde_json::Value>(&contents)
+        .map(|value| has_galdr_hook(&value))
+        .unwrap_or_else(|_| contents.contains("postToolUse") && contents.contains("galdr hook"));
+    if configured {
+        println!("Cursor postToolUse hook is present: {}", path.display());
+    } else {
+        println!("Cursor postToolUse hook is missing: {}", path.display());
+        println!("Run `galdr setup cursor --print` and merge the snippet into hooks.json.");
+    }
+    Ok(())
+}
+
+pub fn cursor_print() {
+    // Cursor's native hooks (since 1.7) live in `~/.cursor/hooks.json` with a `version`
+    // and camelCase events. galdr's sensor reads Cursor's `postToolUse` payload via a
+    // small field map (tool_output → tool_response, conversation_id → session_id), so
+    // the same `galdr hook` command works — just merge this and you are done.
+    println!("{CURSOR_HOOK_SNIPPET}");
+}
+
+pub fn cursor_hook_configured() -> Option<bool> {
+    let path = paths::cursor_hooks().ok()?;
     let contents = std::fs::read_to_string(path).ok()?;
     serde_json::from_str::<serde_json::Value>(&contents)
         .map(|value| has_galdr_hook(&value))

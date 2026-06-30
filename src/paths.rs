@@ -169,6 +169,13 @@ pub fn codex_hooks() -> Result<PathBuf> {
     Ok(home()?.join(".codex").join("hooks.json"))
 }
 
+/// Cursor hooks file inspected by `galdr setup cursor`. Cursor's native hooks
+/// (since 1.7) live in `~/.cursor/hooks.json`; its `postToolUse` event carries a
+/// Claude-Code-styled payload with a couple of renamed fields the sensor maps.
+pub fn cursor_hooks() -> Result<PathBuf> {
+    Ok(home()?.join(".cursor").join("hooks.json"))
+}
+
 /// Skills root: `$GALDR_SKILLS_ROOT` if set, else `~/.agents/skills`.
 pub fn skills_root() -> Result<PathBuf> {
     if let Some(root) = env_dir("GALDR_SKILLS_ROOT") {

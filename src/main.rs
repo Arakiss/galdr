@@ -314,6 +314,15 @@ enum SetupTarget {
         #[arg(long)]
         print: bool,
     },
+    /// Inspect or print the Cursor postToolUse hook snippet (~/.cursor/hooks.json).
+    Cursor {
+        /// Check whether ~/.cursor/hooks.json already has galdr hook wiring.
+        #[arg(long)]
+        check: bool,
+        /// Print the recommended hooks snippet.
+        #[arg(long)]
+        print: bool,
+    },
     /// Install galdr's own skill so every harness knows how to drive galdr.
     ///
     /// The skill is embedded in the binary and version-stamped, so it never drifts
@@ -491,6 +500,14 @@ fn main() {
                 }
                 if check || !print {
                     exit_on_error(setup::codex_check());
+                }
+            }
+            SetupTarget::Cursor { check, print } => {
+                if print {
+                    setup::cursor_print();
+                }
+                if check || !print {
+                    exit_on_error(setup::cursor_check());
                 }
             }
             SetupTarget::Skill { print } => {
