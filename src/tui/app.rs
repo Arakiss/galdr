@@ -455,7 +455,10 @@ impl<C: Catalog> App<C> {
             return;
         };
         let id = rec.rec_id.clone();
-        match distill::distill(&id, None, false, false, None) {
+        // The TUI is a human browsing: `d` installs the faithful render as a final,
+        // discoverable skill (`--fast`). Authoring from the printed brief is the
+        // agent/CLI path — its stdout would corrupt the full-screen UI anyway.
+        match distill::distill(&id, None, true, false, None) {
             Ok(()) => {
                 self.status =
                     format!("distilled {id} into a skill — now discoverable in your harnesses");

@@ -222,9 +222,10 @@ fn json_output_is_machine_readable() {
 }
 
 #[test]
-fn default_distill_produces_a_complete_usable_skill() {
-    // The "finished in one" bar: `galdr distill <id>` with no flags must install a
-    // complete, valid skill in the open-standard anatomy — no agent pass, no draft.
+fn default_distill_writes_an_unauthored_draft() {
+    // A replay of the tool calls is not yet a skill: the default hands the agent a
+    // faithful draft to author — status draft, real steps, an authoring marker — and
+    // prints the brief that tells the agent what to add and how to install it.
     let sb = Sandbox::new();
     let id = sb.record(
         "deploy preview",
@@ -233,12 +234,44 @@ fn default_distill_produces_a_complete_usable_skill() {
             r#"{"tool_name":"Write","tool_input":{"file_path":"/repo/out.txt"},"tool_response":{}}"#,
         ],
     );
-    assert!(sb.run(&["distill", &id]).status.success());
+    let out = sb.run(&["distill", &id]);
+    assert!(out.status.success());
+    let said = stdout(&out);
+    assert!(said.contains("author the real skill"), "{said}");
+    assert!(said.contains("galdr distill --from"), "{said}");
+
+    let skill = sb.skill_md("galdr-deploy-preview");
+    assert!(skill.contains("galdr:unauthored"), "draft marker:\n{skill}");
+    for section in ["## When to use", "## Steps", "## Verification"] {
+        assert!(skill.contains(section), "missing {section}:\n{skill}");
+    }
+    // It is catalogued as a draft, pending authoring — not final.
+    let listing = stdout(&sb.run(&["skills"]));
+    assert!(
+        listing.contains("draft"),
+        "should list as draft:\n{listing}"
+    );
+}
+
+#[test]
+fn fast_distill_produces_a_complete_usable_skill() {
+    // `--fast` is the mechanical one-shot: a complete, valid skill in the open-standard
+    // anatomy, installed as final — no authoring pass, no draft.
+    let sb = Sandbox::new();
+    let id = sb.record(
+        "deploy preview",
+        &[
+            BASH_STATUS,
+            r#"{"tool_name":"Write","tool_input":{"file_path":"/repo/out.txt"},"tool_response":{}}"#,
+        ],
+    );
+    assert!(sb.run(&["distill", &id, "--fast"]).status.success());
 
     let skill = sb.skill_md("galdr-deploy-preview");
     for section in ["## When to use", "## Inputs", "## Steps", "## Verification"] {
         assert!(skill.contains(section), "missing {section}:\n{skill}");
     }
+    assert!(!skill.contains("galdr:unauthored"));
     assert!(!skill.contains("[galdr DRAFT]"));
     assert!(!skill.contains("TODO(agent)"));
     // It scores as a complete, ready skill — not a draft.
@@ -254,7 +287,7 @@ fn distill_name_chooses_the_skill_name() {
     let sb = Sandbox::new();
     let id = sb.record("whatever the recording was called", &[BASH_STATUS]);
     assert!(
-        sb.run(&["distill", &id, "--name", "rust-greenlight"])
+        sb.run(&["distill", &id, "--fast", "--name", "rust-greenlight"])
             .status
             .success()
     );
@@ -1201,9 +1234,9 @@ fn skills_catalog_reports_status_readiness_and_delta() {
     let sb = Sandbox::new();
     let id = sb.record("readiness", &[BASH_STATUS]);
 
-    // The agent-assisted scaffolding path still exists behind --draft and scores
-    // lower (draft markers, missing refinement) before an agent finishes it.
-    assert!(sb.run(&["distill", &id, "--draft"]).status.success());
+    // The default distill writes a faithful draft (status draft) until an agent
+    // authors it and installs the final version with --from.
+    assert!(sb.run(&["distill", &id]).status.success());
     let draft_listing = stdout(&sb.run(&["skills"]));
     assert!(draft_listing.contains("galdr-readiness"));
     assert!(draft_listing.contains("draft"));

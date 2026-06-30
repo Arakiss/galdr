@@ -34,7 +34,7 @@ The idea: instead of re-explaining to your agent how to do a task it already did
 > (repeated tasks worth turning into a skill), **`galdr bench`** (per-skill replay
 > hit-rate from recorded outcomes), and optional autonomous distillation against a
 > local, loopback-only MLX server. A plain `cargo build` needs none of the MLX path —
-> it is feature-gated and falls back cleanly to the agent-assisted draft.
+> it is feature-gated and falls back cleanly to the faithful mechanical render.
 
 ## Why tool calls, not pixels
 
@@ -71,11 +71,13 @@ agent session ──(PostToolUse)──▶ galdr hook ──append──▶ span
    **always exits 0**: it never breaks the session, even if it fails internally.
 2. **Recording** (`galdr rec start` / `stop`) — opens and closes the span, and writes
    the recording metadata.
-3. **Distillation** (`galdr distill <id>`) — renders a **complete, usable** `SKILL.md`
-   straight from the span, in the open-standard anatomy (`When to use` / `Inputs` /
-   `Steps` / `Verification`), installs it, and links it into every installed harness.
-   Finished in one, no agent pass required. For a higher ceiling, `--draft` emits
-   scaffolding an agent refines, and `--auto` lets a local model write it.
+3. **Distillation** (`galdr distill [reference]`) — a replay of the tool calls is not yet
+   a skill. galdr renders a faithful draft from the span (real steps, secrets redacted)
+   and hands the agent an authoring brief: read the span, supply the judgment galdr can't
+   — the problem it solves, the inputs that vary, each step's intent, the gotchas — and
+   install the authored skill with `--from`. galdr owns the mechanism; the agent owns the
+   intelligence. `--fast` installs the mechanical render as-is in one step (a floor, for a
+   human or a headless run); `--auto` lets a local MLX model author it.
 
 ## Install
 
@@ -96,18 +98,32 @@ ships signed, checksummed binaries (Sigstore + SHA-256) and an SBOM for macOS an
 ```sh
 galdr setup skill         # teach your harness(es) how to drive galdr (one time)
 
-galdr rec start demo      # start recording
-#  ... do the task with your agent (a few tool calls) ...
-galdr rec stop            # close the recording, prints the rec_id
+galdr rec start demo      # ● recording "demo" — now do the task with your agent
+#  ... a few tool calls ...
+galdr rec stop            # ■ stopped "demo" — 6 steps
 
-galdr list                # list recordings
-galdr rec status          # inspect the active recording, if any
-galdr distill <rec_id>    # → a complete, discoverable skill, in one step
-
-# Optional, higher ceiling:
-galdr distill <rec_id> --draft              # scaffolding an agent refines, then…
-galdr distill <rec_id> --from <temp-file>   # …install the agent's refined skill
+galdr distill             # render a faithful draft of the most recent recording + an authoring brief
+#  ... read the span, write the real skill, then ...
+galdr distill --from skill.md   # install the skill you authored
 ```
+
+galdr captures *what* ran; you supply *why*. The default hands you a faithful draft and a
+brief — install your authored version with `--from`, or `galdr distill --fast` to accept
+the mechanical render as-is (a floor, not a finished skill).
+
+**You never copy a 26-character id.** Every command that takes a recording resolves it
+the way you think about it — the most recent by default, or by name, or by a short id
+prefix:
+
+```sh
+galdr distill demo        # draft the recording named "demo"
+galdr show                # inspect the most recent recording's steps
+galdr suggest             # repeated tasks worth turning into a skill
+galdr bench               # how reliably your distilled skills actually replay
+```
+
+Run `galdr` with no arguments for a one-screen overview: whether anything is recording,
+how many recordings and skills you have, and the next command to type.
 
 ## More commands
 
@@ -115,7 +131,7 @@ galdr distill <rec_id> --from <temp-file>   # …install the agent's refined ski
 galdr daemon --detach        # run the supervisor daemon (catalog indexer + socket)
 galdr daemon status          # check whether the daemon is answering
 galdr daemon stop            # ask the daemon to shut down gracefully
-galdr show <rec_id>          # inspect one recording with its steps
+galdr show [reference]       # inspect one recording (name, id prefix, or omit for the latest)
 galdr skills                 # list installed skills, galdr/external origin, provenance, and readiness
 galdr harnesses              # detect agent harnesses on this system and whether galdr's sensor is wired
 galdr harnesses --json       # the same, machine-readable
@@ -123,7 +139,7 @@ galdr link                   # make distilled skills discoverable by every insta
 galdr link --skill <name>    # link just one skill
 galdr evaluations            # list skill evaluator outputs from the catalog
 galdr evaluations --skill <name>   # show one skill's evaluator history
-galdr outcome usage --skill <name> --rec <rec_id> --outcome success
+galdr outcome usage --skill <name> --outcome success   # --rec defaults to the latest recording
 galdr outcome label --skill <name> --label accepted --evaluator human
 galdr outcome list --skill <name>  # inspect captured usage/outcome labels
 galdr suggest                # skill opportunities: repeated tasks not yet distilled
@@ -135,25 +151,44 @@ galdr setup claude --check   # check Claude Code PostToolUse hook wiring
 galdr setup claude --print   # print the safe settings.json snippet
 galdr setup codex --check    # check Codex PostToolUse hook wiring (~/.codex/hooks.json)
 galdr setup codex --print    # print the safe Codex hooks snippet
-galdr tui                    # browse recordings, inspect spans, audit skills
+galdr tui                    # lazygit-style browser: recordings, spans, skills, harnesses
 
 galdr diff <a> <b>           # diff two recordings: constants vs parameters
 galdr parametrize <a> <b> --emit   # write a parametrized SKILL.md (suffix -param)
-galdr export <rec_id> --out ./export        # export metadata + summaries, no raw payloads
-galdr export <rec_id> --out ./export --redact   # export a redacted raw copy
+galdr export [reference] --out ./export          # export metadata + summaries, no raw payloads
+galdr export [reference] --out ./export --redact   # export a redacted raw copy
 
-galdr distill <rec_id> --auto      # autonomous distillation (local MLX, see below)
+galdr distill --auto         # autonomous distillation of the latest recording (local MLX, see below)
 ```
 
-galdr is two surfaces over one catalog: the **CLI is AI-first** and the **TUI is for
-humans**. Every read command — `list`, `show`, `skills`, `evaluations`, `harnesses`,
-`outcome list` — takes `--json` and emits a single parseable document, so an agent
-consumes galdr without scraping a table:
+galdr is two surfaces over one catalog, and **both serve humans and agents**. The CLI
+gives a person warm, colorized output and a no-id-needed flow (resolve a recording by
+the latest, a name, or a short prefix; `NO_COLOR` and non-TTY output are honored); it
+gives an agent `--json` on every read command — `list`, `show`, `skills`, `evaluations`,
+`harnesses`, `outcome list` — emitting a single parseable document, so a tool consumes
+galdr without scraping a table:
 
 ```sh
 galdr list --json | jq '.[].rec_id'
 galdr skills --json | jq '[.[] | select(.origin == "galdr")]'
 ```
+
+### Terminal UI
+
+`galdr tui` is the browsable face — a lazygit-style cockpit over the same catalog, no
+flags to memorize. Three panels (Recordings · Skills · Harnesses), moved with `1`/`2`/`3`
+or `tab`, and a live preview that follows the selection:
+
+- **Recordings** — `enter` steps into the span; `d` distills a complete skill; `e`
+  exports it without raw payloads; `o` reveals the span path.
+- **Skills** — `enter` reads the `SKILL.md` (scrollable); `l` links it into every
+  installed harness; `v` validates it against the content gate; `O` records a success
+  outcome (the signal `galdr bench` reads).
+- `/` filters recordings and skills, `?` lists the keybindings, `q` quits.
+
+Every action the TUI takes is **local and additive** — it distills, links, validates,
+exports, and records outcomes. It never deletes a span, rewrites a skill behind your
+back, or mutates your harness settings.
 
 The daemon is optional. `list`/`show`/`skills` answer daemon-first, then from the
 read-only catalog, then from a fresh in-memory index built straight from disk — so the
@@ -192,8 +227,9 @@ observed outcome, retries, interventions, and reviewer labels.
 
 ### Optional: autonomous distillation (local MLX)
 
-`galdr distill <id> --auto` lets a local model write the finished skill instead of the
-agent. It is **off by default** and **loopback-only** — it never reaches off the machine.
+`galdr distill --auto` (optionally with a recording reference) lets a local model write
+the finished skill instead of the agent. It is **off by default** and **loopback-only** —
+it never reaches off the machine.
 
 1. Build with the feature: `cargo install --path . --features mlx`.
 2. Run a local OpenAI-compatible server, e.g. `mlx_lm.server` from
@@ -201,11 +237,12 @@ agent. It is **off by default** and **loopback-only** — it never reaches off t
    `python3 -m mlx_lm.server --model mlx-community/Qwen3-4B-Instruct-2507-4bit`
    (the default endpoint `http://127.0.0.1:8080` and model are configurable in
    `~/.galdr/config.json`).
-3. `galdr distill <id> --auto` (or `--engine mlx-subprocess` to shell out to
+3. `galdr distill --auto` (or `--engine mlx-subprocess` to shell out to
    `python3 -m mlx_lm.generate`, which needs no `mlx` feature).
 
-If the engine is missing or unreachable, `--auto` falls back to the Phase 0 draft and
-still exits 0. Always review a machine-generated skill before relying on it.
+If the engine is missing or unreachable, `--auto` falls back to the deterministic
+complete skill and still exits 0. Always review a machine-generated skill before relying
+on it.
 
 ## Wiring the sensor
 
@@ -353,9 +390,9 @@ Phase 1 (shipped, built on the Phase 0 loop):
 
 Phase 2 (shipped):
 
-- ✅ **Finished in one** — `galdr distill` renders a complete, valid skill from the
-  span (open-standard `When to use` / `Inputs` / `Steps` / `Verification` anatomy) and
-  installs it, no agent pass required. `--draft` and `--auto` remain for a higher ceiling.
+- ✅ **Faithful render** — `galdr distill` renders a valid skill from the span in the
+  open-standard `When to use` / `Inputs` / `Steps` / `Verification` anatomy. `--fast`
+  installs it as-is; `--auto` lets a local MLX model author it.
 - ✅ **Multi-harness discoverability** — a distilled skill is linked into every installed
   harness's skills directory (Claude Code, Codex, Cursor); `galdr link` / `doctor` manage it.
 - ✅ **Multi-harness sensor** — `galdr setup codex` wires the same hook into Codex's
@@ -363,6 +400,23 @@ Phase 2 (shipped):
 - ✅ **Session-scoped recording** — a recording binds to the session that started it, so a
   concurrent session in another project can't leak its tool calls into the span.
 - ✅ **AI-first CLI** — `--json` on every read command.
+
+Phase 3 (shipped) — a surface humans and agents both want to use:
+
+- ✅ **Author by default** — a replay of the tool calls is not a skill. `galdr distill`
+  now renders a faithful draft and hands the agent an authoring brief (supply the why,
+  the generalized inputs, the gotchas), installed with `--from`; an unauthored draft
+  scores lower until it is raised. `--fast` keeps the mechanical one-shot for a floor.
+- ✅ **No ids to copy** — every command resolves a recording by the most recent, a name,
+  or a short id prefix. `galdr distill` distills the run you just made.
+- ✅ **A friendly home screen** — `galdr` with no arguments shows where you are and the
+  next command to type; output is colorized, TTY-aware, and honors `NO_COLOR`.
+- ✅ **`galdr suggest`** — signs every recording by the shape of its steps, dedupes
+  against installed skills, and ranks the repeated tasks worth distilling.
+- ✅ **`galdr bench`** — aggregates recorded outcomes into a per-skill replay hit-rate
+  and effort cost; the production signal a capability test cannot give.
+- ✅ **A lazygit-style TUI** — three panels, a live preview, and in-place actions
+  (distill, link, validate, export, record outcome), all local and additive.
 
 Next:
 
