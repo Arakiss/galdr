@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.10.0](https://github.com/Arakiss/galdr/compare/v0.9.0...v0.10.0) (2026-06-30)
+
+
+### Features
+
+* **cli:** color doctor and skills ([#40](https://github.com/Arakiss/galdr/issues/40)) ([d92ec5a](https://github.com/Arakiss/galdr/commit/d92ec5a6e31f82b482a2fab06b05a606efc4eeb9))
+
 ## [0.9.0](https://github.com/Arakiss/galdr/compare/v0.8.1...v0.9.0) (2026-06-30)
 
 
