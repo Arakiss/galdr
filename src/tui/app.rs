@@ -53,6 +53,8 @@ pub struct App<C: Catalog> {
     pub preview_focus: bool,
     /// Rendered text of the selected skill's `SKILL.md`, shown in the preview.
     pub preview_md: String,
+    /// Vertical scroll offset of the skill preview (when its pane is focused).
+    pub preview_scroll: u16,
 
     pub recordings: Vec<RecordingRow>,
     pub skills: Vec<SkillRow>,
@@ -88,6 +90,7 @@ impl<C: Catalog> App<C> {
             focus: Panel::Recordings,
             preview_focus: false,
             preview_md: String::new(),
+            preview_scroll: 0,
             rec_view: recordings.clone(),
             skill_view: skills.clone(),
             recordings,
@@ -281,14 +284,35 @@ impl<C: Catalog> App<C> {
     }
 
     fn on_key_preview(&mut self, key: KeyEvent) {
+        // esc/h/← always leaves the preview pane back to the sidebar.
+        if matches!(key.code, KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left) {
+            self.preview_focus = false;
+            self.status.clear();
+            return;
+        }
+        // The Skills preview is scrolling text (a SKILL.md); the Recordings preview is a
+        // step list with raw-payload drill-in.
+        if self.focus == Panel::Skills {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(1)
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(1)
+                }
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(PAGE as u16)
+                }
+                KeyCode::PageUp => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(PAGE as u16)
+                }
+                KeyCode::Char('g') | KeyCode::Home => self.preview_scroll = 0,
+                _ => {}
+            }
+            return;
+        }
         let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
         match key.code {
-            KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left => {
-                // Leave the preview pane; the sidebar selection (and its live preview)
-                // stays put.
-                self.preview_focus = false;
-                self.status.clear();
-            }
             KeyCode::Char('j') | KeyCode::Down => step(&mut self.detail_state, steps, 1),
             KeyCode::Char('k') | KeyCode::Up => step(&mut self.detail_state, steps, -1),
             KeyCode::Char('g') | KeyCode::Home => jump(&mut self.detail_state, steps, true),
@@ -338,6 +362,7 @@ impl<C: Catalog> App<C> {
                 page(&mut self.skill_state, len, -(PAGE as isize));
                 self.sync_preview();
             }
+            KeyCode::Enter | KeyCode::Right => self.enter_preview(),
             KeyCode::Char('l') => self.link_selected(),
             KeyCode::Char('v') => self.validate_selected(),
             KeyCode::Char('O') => self.outcome_selected(),
@@ -387,24 +412,35 @@ impl<C: Catalog> App<C> {
                     .selected_skill()
                     .and_then(|s| std::fs::read_to_string(&s.skill_path).ok())
                     .unwrap_or_default();
+                self.preview_scroll = 0;
             }
             Panel::Harnesses => {}
         }
     }
 
-    /// Focuses the preview pane to step through the selected recording.
+    /// Focuses the preview pane: step through a recording's steps, or scroll a skill's
+    /// `SKILL.md`.
     fn enter_preview(&mut self) {
-        if self.focus != Panel::Recordings {
-            return;
+        match self.focus {
+            Panel::Recordings => {
+                let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
+                if steps == 0 {
+                    return;
+                }
+                if self.detail_state.selected().is_none() {
+                    self.detail_state.select(Some(0));
+                }
+                self.preview_focus = true;
+            }
+            Panel::Skills => {
+                if self.preview_md.is_empty() {
+                    return;
+                }
+                self.preview_scroll = 0;
+                self.preview_focus = true;
+            }
+            Panel::Harnesses => {}
         }
-        let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
-        if steps == 0 {
-            return;
-        }
-        if self.detail_state.selected().is_none() {
-            self.detail_state.select(Some(0));
-        }
-        self.preview_focus = true;
     }
 
     fn open_overlay(&mut self, overlay: Overlay) {
