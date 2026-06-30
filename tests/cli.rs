@@ -4,7 +4,8 @@
 //! isolated and the tests are hermetic and parallel-safe. The binary path comes
 //! from `CARGO_BIN_EXE_galdr`, which cargo sets for integration tests.
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -181,6 +182,30 @@ fn write_human_recording(sb: &Sandbox, rec_id: &str, name: &str, value: serde_js
         serde_json::to_string_pretty(&recording).unwrap(),
     )
     .unwrap();
+}
+
+fn active_browser_port(sb: &Sandbox) -> u16 {
+    let raw =
+        std::fs::read_to_string(sb.home().join(".galdr/observe/browser-active.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    value["port"].as_u64().unwrap() as u16
+}
+
+fn post_browser_event(port: u16, event: serde_json::Value) {
+    let body = serde_json::to_string(&event).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let request = format!(
+        "POST /event HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 204"),
+        "unexpected response: {response}"
+    );
 }
 
 #[test]
@@ -953,6 +978,83 @@ fn observe_synthetic_records_a_human_trace() {
     assert!(
         skill.contains("Confirm the created issue page is open or a success message appears."),
         "{skill}"
+    );
+}
+
+#[test]
+fn observe_browser_collector_records_loopback_events() {
+    let sb = Sandbox::new();
+    let start = sb.run(&[
+        "observe",
+        "browser",
+        "start",
+        "browser collector",
+        "--url",
+        "https://example.test/form",
+        "--no-open",
+    ]);
+    assert!(start.status.success(), "{}", stderr(&start));
+    let port = active_browser_port(&sb);
+
+    post_browser_event(
+        port,
+        serde_json::json!({
+            "ts": "2026-06-30T00:00:00Z",
+            "action": "human.browser.navigate",
+            "source": {
+                "kind": "browser",
+                "url": "https://example.test/form",
+                "title": "Demo form"
+            }
+        }),
+    );
+    post_browser_event(
+        port,
+        serde_json::json!({
+            "ts": "2026-06-30T00:00:01Z",
+            "action": "human.browser.input",
+            "source": {
+                "kind": "browser",
+                "url": "https://example.test/form",
+                "title": "Demo form"
+            },
+            "target": {
+                "primary": {
+                    "kind": "label",
+                    "value": "Email"
+                },
+                "label": "Email"
+            },
+            "value": {
+                "policy": "redacted",
+                "kind": "text",
+                "chars": 16
+            }
+        }),
+    );
+
+    let status = stdout(&sb.run(&["observe", "browser", "status"]));
+    assert!(status.contains("events: 2"), "{status}");
+    assert!(status.contains("server: up"), "{status}");
+
+    let stop = sb.run(&["observe", "browser", "stop"]);
+    assert!(stop.status.success(), "{}", stderr(&stop));
+    let said = stdout(&stop);
+    assert!(said.contains("stopped browser observation"), "{said}");
+    assert!(said.contains("2 human steps"), "{said}");
+
+    let show = sb.run(&["show", "browser collector", "--json"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(detail["steps"].as_array().unwrap().len(), 2);
+    assert_eq!(detail["steps"][0]["event_kind"], "human");
+    assert_eq!(
+        detail["steps"][0]["summary"],
+        "navigate https://example.test/form"
+    );
+    assert_eq!(
+        detail["steps"][1]["summary"],
+        "type into \"Email\" (text, 16 chars)"
     );
 }
 

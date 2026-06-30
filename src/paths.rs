@@ -9,6 +9,7 @@
 //! ├── catalog.sqlite         queryable index, rebuilt from spans/ + recordings/
 //! ├── spans/<rec_id>.jsonl   append-only span, one line per tool call
 //! ├── outcomes/*.jsonl       append-only skill usage and outcome labels
+//! ├── observe/               active browser-observe sessions and local sensor files
 //! └── recordings/<rec_id>.json   metadata written when a recording is closed
 //! ```
 //!
@@ -95,6 +96,21 @@ pub fn outcomes_dir() -> Result<PathBuf> {
     Ok(galdr_root()?.join("outcomes"))
 }
 
+/// Human-observation session root: `~/.galdr/observe`.
+pub fn observe_root() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("observe"))
+}
+
+/// Active browser-observation flag: `~/.galdr/observe/browser-active.json`.
+pub fn browser_observe_active() -> Result<PathBuf> {
+    Ok(observe_root()?.join("browser-active.json"))
+}
+
+/// A browser-observation session directory: `~/.galdr/observe/<rec_id>`.
+pub fn browser_observe_session_dir(rec_id: &str) -> Result<PathBuf> {
+    Ok(observe_root()?.join(rec_id))
+}
+
 /// Append-only skill usage log: `~/.galdr/outcomes/skill_usage.jsonl`.
 pub fn skill_usage_log() -> Result<PathBuf> {
     Ok(outcomes_dir()?.join("skill_usage.jsonl"))
@@ -123,6 +139,7 @@ pub fn ensure_dirs() -> Result<()> {
     std::fs::create_dir_all(spans_dir()?)?;
     std::fs::create_dir_all(recordings_dir()?)?;
     std::fs::create_dir_all(outcomes_dir()?)?;
+    std::fs::create_dir_all(observe_root()?)?;
     Ok(())
 }
 
