@@ -60,19 +60,20 @@ enum Commands {
 
     /// Distill a recording into a skill.
     ///
-    /// Without flags, generate the draft (scaffolding). With `--from <file>`,
-    /// install the distillation the agent prepared. With `--auto`, a local MLX
-    /// engine writes the finished skill (falling back to the draft if unavailable).
+    /// By default galdr writes a faithful *draft* and hands you (the agent) a brief to
+    /// author the real skill, then install it with `--from`. `--fast` installs the
+    /// mechanical render as a final skill in one step; `--auto` lets a local MLX engine
+    /// write it (falling back to the mechanical render if the engine is unavailable).
     Distill {
         /// Which recording to distill: a rec_id, a unique id prefix, or a recording
         /// name. Omit it to distill the most recent recording (the one you just made).
         reference: Option<String>,
-        /// Install the final SKILL.md from this file (distilled by the agent).
-        #[arg(long, value_name = "FILE", conflicts_with_all = ["auto", "draft"])]
+        /// Install the final SKILL.md from this file (the skill you authored).
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["auto", "fast"])]
         from: Option<PathBuf>,
-        /// Write the agent-assisted scaffolding instead of a complete skill.
+        /// Skip authoring: install the faithful, mechanical render as a final skill.
         #[arg(long, conflicts_with = "auto")]
-        draft: bool,
+        fast: bool,
         /// Distill autonomously with a local MLX engine.
         #[arg(long)]
         auto: bool,
@@ -414,7 +415,7 @@ fn main() {
         Commands::Distill {
             reference,
             from,
-            draft,
+            fast,
             auto,
             engine,
             name,
@@ -432,7 +433,7 @@ fn main() {
                 exit_on_error(distill::distill(
                     &id,
                     from.as_deref(),
-                    draft,
+                    fast,
                     strict,
                     name.as_deref(),
                 ))

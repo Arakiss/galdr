@@ -100,37 +100,49 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 2. Start: `galdr rec start <short-slug>`.
 3. Do the task normally. Your tool calls are captured automatically by the PostToolUse
    hook — no extra steps, nothing to narrate.
-4. Stop before writing your final report: `galdr rec stop` (prints the rec_id).
-5. Distill: `galdr distill <rec_id> --name <name>` → a complete SKILL.md, installed and
-   linked into every installed harness. It must clear the content gate first (secrets,
-   personal paths, and broken skills are refused), so what lands is safe to share.
-   **You choose the name** — galdr does not guess one. Pick something descriptive,
-   memorable, and original (e.g. `cargo-preflight`, `rust-greenlight`), not a mechanical
-   label. Omit `--name` and galdr falls back to `galdr-<recording-slug>`.
-6. Replay: the new skill is discoverable by name in this harness and every other one
-   galdr detected. Invoke it later with new inputs; interpret it, don't replay verbatim.
+4. Stop before writing your final report: `galdr rec stop`. It closes the span and prints
+   the step count — there is no id to copy.
+5. Distill into a draft, then **author it**. `galdr distill --name <name>` renders a
+   faithful draft from the span (real steps, secrets redacted) and prints an authoring
+   brief. A replay of your tool calls is not yet a skill: galdr captures *what* ran, you
+   supply *why*. Read the span and write the real skill — the problem it solves and when
+   to reach for it, the values that vary as named inputs, each step's intent, how to
+   verify success, the gotchas — then install your version: `galdr distill --from <file>`.
+   It must clear the content gate (secrets, personal paths, broken skills are refused).
+   **You choose the name** — galdr does not guess one; pick something descriptive and
+   memorable (e.g. `cargo-preflight`, `rust-greenlight`), not a mechanical label. Shortcut:
+   `galdr distill --fast` installs the mechanical render as-is — a floor, not a finished
+   skill; reach for it only when authoring adds nothing.
+6. Replay: once authored, the skill is discoverable by name in this harness and every
+   other one galdr detected. Invoke it later with new inputs; interpret it, don't replay
+   verbatim.
 
 ## Inputs
 
 - `<short-slug>` — a short name for the recording (becomes the skill name `galdr-<slug>`).
-- `<rec_id>` — the id `galdr rec stop` prints; pass it to `distill`, `show`, `export`.
+- `[reference]` — which recording a command acts on: omit it for the most recent, or pass
+  a recording name or a short id prefix. `distill`, `show`, `export`, and `outcome --rec`
+  all resolve a recording this way, so you never copy a 26-character id.
 
 ## Commands (the CLI is AI-first: add `--json` to any read command for structured output)
 
 - `galdr rec status` — is a recording active, and how many steps so far.
 - `galdr rec start <slug>` / `galdr rec stop` — open and close a recording.
 - `galdr list [--json]` — closed recordings.
-- `galdr show <rec_id> [--json]` — a recording's steps.
-- `galdr distill <rec_id> [--name <name>]` — render and install a complete skill in one
-  step. `--name` sets the skill name (you bring the naming judgment; galdr does not guess);
-  without it the name is `galdr-<recording-slug>`. Variants: `--draft` writes scaffolding
-  for you to refine then install with `--from <file>`; `--auto` lets a local model write it.
+- `galdr show [reference] [--json]` — a recording's steps (the most recent if omitted).
+- `galdr distill [reference] [--name <name>]` — render a faithful **draft** and print an
+  authoring brief; with no reference it uses the recording you just made. Read the span,
+  write the real skill, and install it with `galdr distill --from <file>`. galdr captures
+  the steps; you supply the judgment that makes it a skill. `--name` sets the skill name
+  (galdr does not guess; without it the name is `galdr-<recording-slug>`). `--fast`
+  installs the mechanical render as-is (a floor); `--auto` lets a local model author it.
 - `galdr skills [--json]` — installed skills, each marked `galdr` (distilled) or `external`.
 - `galdr link` — re-link galdr skills into every installed harness's skills directory.
 - `galdr harnesses [--json]` — which harnesses are installed and whether galdr is wired in.
-- `galdr outcome usage --skill <name> --rec <rec_id> --outcome success|partial|failed` —
-  after you later USE a distilled skill, record how it went. This is the training signal
-  that tells galdr which skills are worth keeping; record it honestly.
+- `galdr outcome usage --skill <name> [--rec <reference>] --outcome success|partial|failed` —
+  after you later USE a distilled skill, record how it went (`--rec` defaults to the most
+  recent recording). This is the training signal that tells galdr which skills are worth
+  keeping; record it honestly.
 - `galdr suggest [--min-count <n>] [--top <n>] [--json]` — skill opportunities: repeated
   tasks (same step shape across recordings) not yet distilled, deduped against installed
   skills and ranked by repeatability. Turns "worth a skill?" into a queryable signal.
@@ -150,14 +162,17 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 1. `galdr rec status` → confirm no active recording.
 2. `galdr rec start <slug>`.
 3. Perform the task using your normal tools.
-4. `galdr rec stop` → note the rec_id.
-5. `galdr distill <rec_id>` → a complete, discoverable skill.
-6. (Later, on reuse) `galdr outcome usage --skill galdr-<slug> --rec <new_rec_id> --outcome <result>`.
+4. `galdr rec stop` → closes the recording (no id to copy).
+5. `galdr distill --name <name>` → a faithful draft + an authoring brief. Read the span,
+   write the real skill, and install it: `galdr distill --from <file>`.
+6. (Later, on reuse) `galdr outcome usage --skill galdr-<slug> --outcome <result>` (`--rec` defaults to the latest recording).
 
 ## Verification
 
 - During work, `galdr rec status` shows the step count climbing.
-- After distilling, `galdr skills` lists the new skill as `final`, readiness high, origin `galdr`.
+- The default distill leaves the skill as a `draft` (readiness docked) until you author
+  it; after `galdr distill --from`, `galdr skills` lists it as `final`, readiness high,
+  origin `galdr`.
 - The skill is reachable in each harness's skills directory; `galdr doctor` reports
   "galdr skill(s) discoverable across N harness(es)".
 

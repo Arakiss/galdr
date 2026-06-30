@@ -1078,7 +1078,9 @@ fn analyze_skill_md(md: &str, rec_id: Option<&str>) -> SkillReadiness {
         score -= 10 * missing_sections.len() as i64;
         notes.push("missing required sections");
     }
-    let draft_markers_present = md.contains("TODO(agent)") || md.contains("[galdr DRAFT]");
+    let draft_markers_present = md.contains("TODO(agent)")
+        || md.contains("[galdr DRAFT]")
+        || md.contains("galdr:unauthored");
     if draft_markers_present {
         score -= 25;
         notes.push("draft markers present");
@@ -1132,7 +1134,8 @@ pub fn infer_skill_status(md: &str) -> String {
     {
         return STATUS_PARAM_DRAFT.to_string();
     }
-    if md.contains("TODO(agent)") || md.contains("[galdr DRAFT]") {
+    if md.contains("TODO(agent)") || md.contains("[galdr DRAFT]") || md.contains("galdr:unauthored")
+    {
         return STATUS_DRAFT.to_string();
     }
     if missing_procedural_sections(md).is_empty() {

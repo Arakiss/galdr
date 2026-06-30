@@ -3,15 +3,16 @@
 //! Every path shares one sanctioned writer ([`install_skill`]), so galdr stays the
 //! only thing that writes the skills directory:
 //!
-//! - **Default (complete):** no LLM. galdr renders a complete, valid skill straight
-//!   from the span in the open-standard anatomy (`When to use` / `Inputs` / `Steps`
-//!   / `Verification`) and installs it — usable immediately, no agent pass. This is
-//!   the "finished in one" path that matches what Codex Record & Replay hands you.
-//! - **`--draft` (agent-assisted):** galdr emits scaffolding with an instruction
-//!   block for an agent to finish by reading the span. Higher ceiling, needs a pass.
+//! - **Default (author):** galdr renders the faithful skill from the span (real steps,
+//!   secrets redacted) but installs it as an unauthored *draft* and hands the agent an
+//!   authoring brief: read the span, supply the judgment galdr can't (the why, the
+//!   generalized inputs, the gotchas), then install with `--from`. galdr owns the
+//!   mechanism; the agent owns the intelligence — the same split it uses for naming.
+//! - **`--fast` (mechanical):** install that faithful render as a final skill in one
+//!   step, no authoring pass. For a human or a headless run that wants the floor now.
 //! - **`--auto` (autonomous):** a local MLX engine writes the finished `SKILL.md`
 //!   from the span (untrusted-data delimiter, low temperature, output validated). If
-//!   the engine is unavailable it falls back to the complete deterministic skill.
+//!   the engine is unavailable it falls back to the mechanical render as final.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -26,16 +27,15 @@ use crate::{catalog, paths, record, span, validate};
 
 /// Distills recording `id` into an installed skill.
 ///
-/// Default: deterministically render a **complete**, valid skill from the span and
-/// install it — usable immediately, no agent pass required (the "finished in one"
-/// path that matches what Codex Record & Replay hands you). With `draft`, write the
-/// scaffolding for an agent to refine instead. With `from`, install the `SKILL.md`
-/// the agent already prepared. In every case galdr is the only writer of the skills
-/// directory.
+/// Default: render the faithful skill from the span and install it as an unauthored
+/// *draft*, then hand the agent a brief to author it (the intelligence galdr can't
+/// supply) and install with `from`. With `fast`, install that mechanical render as a
+/// final skill in one step. With `from`, install the `SKILL.md` the agent prepared. In
+/// every case galdr is the only writer of the skills directory.
 pub fn distill(
     id: &str,
     from: Option<&Path>,
-    draft: bool,
+    fast: bool,
     strict: bool,
     name: Option<&str>,
 ) -> Result<()> {
@@ -52,15 +52,18 @@ pub fn distill(
         return Ok(());
     }
 
-    if draft {
-        return write_draft(id, &skill_name, &skill_dir, &recording, strict);
+    // `--fast` accepts the mechanical render as final; the default hands the agent a
+    // faithful draft to author, because a replay of the tool calls is not yet a skill.
+    if fast {
+        return write_complete(id, &skill_name, &skill_dir, &recording, strict);
     }
-    write_complete(id, &skill_name, &skill_dir, &recording, strict)
+    write_draft(id, &skill_name, &skill_dir, &recording, strict)
 }
 
-/// Renders a complete, valid skill from the span and installs it. No TODO markers,
-/// no agent pass: it is a real skill the moment it lands. An agent (or a later edit,
-/// or `--draft`) can still sharpen it, but it is usable as-is.
+/// The `--fast` (and `--auto` fallback) path: render the faithful skill from the span
+/// and install it as final. No agent pass — it is the mechanical floor, usable as-is.
+/// A replay of the tool calls, honest about being exactly that; the default flow hands
+/// the agent the same render as a draft to elevate.
 fn write_complete(
     id: &str,
     skill_name: &str,
@@ -81,16 +84,17 @@ fn write_complete(
     install_skill(skill_name, skill_dir, &content, id, &ctx)?;
 
     println!(
-        "Distilled {} step(s) into a complete skill.",
+        "Distilled {} step(s) into a complete skill (mechanical render, installed as final).",
         meaningful_steps(&events).len()
     );
-    println!(
-        "Refine it any time: edit the SKILL.md, or `galdr distill --draft` for an agent-assisted pass."
-    );
+    println!("For a sharper skill, drop `--fast` next time and author it from the span.");
     Ok(())
 }
 
-/// Writes the Phase 0 draft for the agent to finish.
+/// The default flow: write the faithful render as an *unauthored draft* (status draft,
+/// not linked into harnesses — a mechanical skill should not reach an agent until it is
+/// authored) and print an authoring brief. The agent reads the span, supplies the
+/// judgment galdr can't, and installs the elevated skill with `--from`.
 fn write_draft(
     id: &str,
     skill_name: &str,
@@ -102,9 +106,14 @@ fn write_draft(
     let events = span::read_span(&span_path)
         .with_context(|| format!("could not read span {}", span_path.display()))?;
 
-    let content = render_skill(skill_name, recording, &events, &span_path);
-    // A draft skips the Practicality axis (its markers are expected) but keeps the
-    // full Security axis — it is a file a human is about to open.
+    // The same faithful render `--fast` would install, marked unauthored. It is a valid
+    // floor (real steps, secrets redacted); the brief asks the agent to raise it.
+    let content = mark_unauthored(
+        skill_name,
+        &render_complete_skill(skill_name, recording, &events),
+    );
+    // Gated as a draft (lenient practicality), though the faithful render passes anyway;
+    // the full Security axis still runs — it is a file a human may open.
     let ctx = validate::ValidationCtx::new(true, strict);
     gate_or_bail(&content, &ctx)?;
 
@@ -112,18 +121,57 @@ fn write_draft(
     std::fs::create_dir_all(skill_dir)?;
     let skill_path = skill_dir.join("SKILL.md");
     warn_on_overwrite(&skill_path);
-    std::fs::write(&skill_path, content)?;
+    std::fs::write(&skill_path, &content)?;
 
     note_skill_written(skill_name, &skill_path, id, catalog::STATUS_DRAFT);
 
-    println!("Skill draft written to {}", skill_path.display());
-    println!("Normalized steps: {}", events.len());
-    println!();
-    println!("Fine distillation (done by the agent):");
-    println!("  1. Read the span {}", span_path.display());
-    println!("  2. Write the refined skill to a temporary file (working area).");
-    println!("  3. Install it:  galdr distill {id} --from <that-file>");
+    let home = paths::home_dir().map(|p| p.display().to_string());
+    let span_ref =
+        validate::generalize_session_text(&span_path.display().to_string(), home.as_deref());
+    print_authoring_brief(&skill_path, &span_ref, meaningful_steps(&events).len());
     Ok(())
+}
+
+/// Inserts a discreet machine marker above the title so `warn_on_overwrite` (and a
+/// later re-distill) recognizes an unauthored draft. Invisible in rendered Markdown;
+/// the human-facing brief is printed, not embedded, so the draft stays a clean skill.
+fn mark_unauthored(skill_name: &str, body: &str) -> String {
+    body.replacen(
+        &format!("# {skill_name}\n"),
+        &format!("<!-- galdr:unauthored -->\n# {skill_name}\n"),
+        1,
+    )
+}
+
+/// The authoring brief: what galdr captured, and the judgment the agent must add to turn
+/// a faithful replay into a skill worth reusing. This is where the intelligence galdr
+/// deliberately does not fake enters the loop — the agent is the author, galdr the scribe.
+fn print_authoring_brief(skill_path: &Path, span_ref: &str, steps: usize) {
+    println!(
+        "{} faithful draft of {steps} step(s) written — now author the real skill.",
+        crate::style::accent("●")
+    );
+    println!("  draft:  {}", tilde(skill_path));
+    println!("  span:   {span_ref}   (full tool_input/tool_response, one JSON line per step)");
+    println!();
+    println!("galdr captured WHAT ran; you supply WHY. Read the span and rewrite the draft:");
+    println!("  - Description / When to use: the real problem it solves and when to reach for");
+    println!("    it, so matching is precise — not a restatement of the steps.");
+    println!("  - Inputs: promote the values that vary to named parameters with judgment;");
+    println!("    drop the incidental literals.");
+    println!("  - Steps: name each command's intent, keep the essential order, group the noise.");
+    println!("  - Verification: how to know it worked (each step's tool_response gives hints).");
+    println!("  - Gotchas: preconditions and what to do when a step fails.");
+    println!("Keep the Provenance block; the content gate runs again on install.");
+    println!();
+    println!(
+        "  install your version:  {}",
+        crate::style::accent("galdr distill --from <your-file>")
+    );
+    println!(
+        "  or accept this draft:  {}",
+        crate::style::accent("galdr distill --fast")
+    );
 }
 
 /// Autonomous distillation: a local MLX engine writes the finished skill from the
@@ -300,7 +348,10 @@ fn warn_on_overwrite(skill_path: &Path) {
     let Ok(existing) = std::fs::read_to_string(skill_path) else {
         return; // nothing to replace
     };
-    if existing.contains("[galdr DRAFT]") || existing.contains("TODO(agent)") {
+    if existing.contains("galdr:unauthored")
+        || existing.contains("[galdr DRAFT]")
+        || existing.contains("TODO(agent)")
+    {
         println!(
             "note: replacing the existing draft at {}",
             skill_path.display()
@@ -780,131 +831,6 @@ fn verification_hint(events: &[Event]) -> String {
         }
         _ => "Confirm the final step produced the intended result, and that each prior step succeeded.".to_string(),
     }
-}
-
-/// Composes the content of the `SKILL.md` draft.
-fn render_skill(
-    skill_name: &str,
-    recording: &record::Recording,
-    events: &[Event],
-    span_path: &Path,
-) -> String {
-    let home = paths::home_dir().map(|p| p.display().to_string());
-    let home = home.as_deref();
-    // The raw span lives under `~/.galdr`; render it relative so the draft — a file a
-    // human opens — never embeds a personal path the gate would (rightly) block.
-    let span_ref = validate::generalize_session_text(&span_path.display().to_string(), home);
-    let mut out = String::new();
-
-    // Skill frontmatter. The description is a draft the agent refines.
-    let _ = writeln!(out, "---");
-    let _ = writeln!(out, "name: {skill_name}");
-    let _ = writeln!(
-        out,
-        "description: \"[galdr DRAFT] Reproduces the recorded task \\\"{}\\\" ({} steps). The agent must sharpen this description so matching is precise.\"",
-        yaml_quoted(&recording.name),
-        events.len()
-    );
-    let _ = writeln!(out, "---");
-    let _ = writeln!(out);
-
-    let _ = writeln!(out, "# {skill_name}");
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "> Draft generated by `galdr distill` from a recording. This is **not** the final skill: it is the scaffolding. The agent completes the marked sections by reading the span."
-    );
-    let _ = writeln!(out);
-
-    // Recording metadata.
-    let _ = writeln!(out, "## Provenance");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "- rec_id: `{}`", recording.rec_id);
-    let _ = writeln!(
-        out,
-        "- recorded: {} → {}",
-        recording.started_at, recording.ended_at
-    );
-    if let Some(cwd) = &recording.cwd {
-        let _ = writeln!(
-            out,
-            "- cwd: `{}`",
-            validate::generalize_session_text(&one_line(cwd, 200), home)
-        );
-    }
-    let _ = writeln!(out, "- span (raw): `{span_ref}`");
-    let _ = writeln!(out);
-
-    // Goal: completed by the agent.
-    let _ = writeln!(out, "## Goal");
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "<!-- TODO(agent): one or two sentences on WHAT this skill achieves and WHEN to use it. -->"
-    );
-    let _ = writeln!(out);
-
-    // Normalized steps from the span.
-    let _ = writeln!(out, "## Recorded steps (normalized)");
-    let _ = writeln!(out);
-    if events.is_empty() {
-        let _ = writeln!(out, "_(the recording captured no steps)_");
-    } else {
-        for event in events {
-            // Redact secret-shaped tokens and generalize session-specific data (a
-            // typed password, a personal path) from the step summary too.
-            let summary = validate::generalize_session_text(
-                &crate::export::redact_text(&summarize_input(&event.tool_name, &event.tool_input)),
-                home,
-            );
-            let _ = writeln!(
-                out,
-                "{}. **{}** — {}",
-                event.seq + 1,
-                event.tool_name,
-                summary
-            );
-        }
-    }
-    let _ = writeln!(out);
-
-    // Distillation instructions aimed at the agent.
-    let _ = writeln!(out, "## Distillation instructions (for the agent)");
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "Read the full span at `{span_ref}` (one JSON line per step, with `tool_input` and `tool_response`) and rewrite this file as a reproducible skill:"
-    );
-    let _ = writeln!(out);
-    let _ = writeln!(
-        out,
-        "1. **Goal**: infer what the task does end to end and fill the section above."
-    );
-    let _ = writeln!(
-        out,
-        "2. **Description** (frontmatter): rewrite it so matching is precise; drop the `[galdr DRAFT]` prefix."
-    );
-    let _ = writeln!(
-        out,
-        "3. **Parameters**: identify which values are specific to this recording (paths, names, text) and turn them into parameters with judgment, not literals."
-    );
-    let _ = writeln!(
-        out,
-        "4. **Procedure**: turn the steps into actionable instructions; group the incidental, keep the essential order."
-    );
-    let _ = writeln!(
-        out,
-        "5. **Success criteria**: add how to verify the task came out right (each step's `tool_response` gives hints)."
-    );
-    let _ = writeln!(
-        out,
-        "6. **Robustness**: note preconditions and what to do if a step fails."
-    );
-    let _ = writeln!(out);
-    let _ = writeln!(out, "Delete this instruction section when you are done.");
-    let _ = writeln!(out);
-
-    out
 }
 
 #[cfg(test)]
