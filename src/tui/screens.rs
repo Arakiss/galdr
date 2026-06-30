@@ -183,10 +183,10 @@ fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
     } else {
         match app.focus {
             Panel::Recordings => {
-                "tab/1-3 panel · jk move · enter inspect · d distill · / filter · r replay · ? · q"
+                "jk move · enter inspect · d distill · e export · / filter · r replay · tab panel · ?"
             }
-            Panel::Skills => "tab/1-3 panel · jk move · / filter · ? help · q quit",
-            Panel::Harnesses => "tab/1-3 panel · jk move · ? help · q quit",
+            Panel::Skills => "jk move · l link · v validate · O outcome · / filter · tab panel · ?",
+            Panel::Harnesses => "jk move · tab/1-3 panel · ? help · q quit",
         }
     };
     let mut spans = Vec::new();
@@ -546,8 +546,14 @@ fn help_body() -> Text<'static> {
         Line::raw(""),
         Line::styled("Recordings", theme::ok()),
         Line::raw("  enter      step into the preview (inspect the steps)"),
-        Line::raw("  d          distill a draft skill (galdr is the only writer)"),
+        Line::raw("  d          distill a complete skill (galdr is the only writer)"),
+        Line::raw("  e          export this recording (no raw payloads)"),
         Line::raw("  r          what \"replay\" means · o show the span path"),
+        Line::raw(""),
+        Line::styled("Skills", theme::ok()),
+        Line::raw("  l          link into every installed harness"),
+        Line::raw("  v          validate against the content gate"),
+        Line::raw("  O          record a success outcome (feeds `galdr bench`)"),
         Line::raw(""),
         Line::styled("Preview (a recording's steps)", theme::ok()),
         Line::raw("  enter      show the raw tool_input / tool_response (scrolls)"),
@@ -786,6 +792,17 @@ mod tests {
         let s = render_text(&mut app);
         assert!(s.contains("galdr-tui-demo"));
         assert!(!s.contains(" bun "));
+    }
+
+    #[test]
+    fn validate_action_targets_the_selected_skill() {
+        // Pressing `v` on the Skills panel validates the selected skill. The fixture's
+        // skill_path doesn't exist, so it reports it can't read it — proving the action
+        // is wired to the selection, with no filesystem writes (validate is read-only).
+        let mut app = App::new(fixture());
+        app.on_key(key(KeyCode::Char('2'))); // Skills
+        app.on_key(key(KeyCode::Char('v'))); // validate
+        assert!(app.status.contains("galdr-tui-demo"), "{}", app.status);
     }
 
     #[test]
