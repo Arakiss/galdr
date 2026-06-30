@@ -74,20 +74,20 @@ prefix. Run `galdr` with no arguments for a one-screen overview of where you are
 
 ## One skill, every harness
 
-galdr distills a skill once and makes it discoverable in **every harness it finds** — Claude
-Code, Codex, and Cursor — and it can record in any of them. `galdr setup <harness>` prints
-the one-line snippet to wire the sensor and the per-harness step (e.g. trusting the hook in
-Codex). Record in one, reuse everywhere.
+galdr distills a skill once and links it into **every harness it finds**: Claude Code, Codex,
+and Cursor. A skill recorded in one is discoverable in all of them. `galdr setup <harness>`
+wires the sensor and prints the per-harness step, like trusting the hook in Codex.
 
 ## Local and private
 
 - Everything lives on your machine: recordings and the catalog under `~/.galdr`, distilled
   skills in your local skill directories. galdr makes **no network egress**: it never phones
   home. The single opt-in exception, local-model distillation, talks **only to loopback**.
-- An install-time gate **redacts secrets and personal paths**, and Computer-Use screenshots
-  are dropped by default (the action is kept, the screenshot isn't, for privacy). A recording
-  can still hold sensitive command output, so keep that in mind before sharing one. See
-  [SECURITY.md](SECURITY.md).
+- The distiller redacts and generalizes the text it writes into a skill, and an install-time
+  gate **refuses any skill that still contains secrets or personal paths**. Computer-Use
+  screenshots are dropped by default (the action is kept, the screenshot isn't, for privacy).
+  The raw recording itself is not redacted and can hold sensitive command output, so keep that
+  in mind before sharing one. See [SECURITY.md](SECURITY.md).
 - The recorder never breaks your agent session: if it fails internally it records nothing and
   exits cleanly.
 
