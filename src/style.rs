@@ -39,9 +39,14 @@ pub fn green(s: &str) -> String {
     wrap("32", s)
 }
 
-/// Attention red (e.g. the live-recording dot).
+/// Attention red (e.g. the live-recording dot, a failing rate).
 pub fn red(s: &str) -> String {
     wrap("31", s)
+}
+
+/// Caution amber (e.g. a middling rate, a warning).
+pub fn amber(s: &str) -> String {
+    wrap("33", s)
 }
 
 #[cfg(test)]

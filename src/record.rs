@@ -222,8 +222,11 @@ pub fn list() -> Result<()> {
     }
     for rec in &recordings {
         println!(
-            "{}  {:<20}  {} steps  {}",
-            rec.rec_id, rec.name, rec.steps, rec.started_at
+            "{}  {}  {} steps  {}",
+            crate::style::dim(&rec.rec_id),
+            crate::style::accent(&format!("{:<20}", rec.name)),
+            rec.steps,
+            crate::style::dim(&rec.started_at),
         );
     }
     Ok(())
