@@ -20,6 +20,6 @@
     { "type": "test", "section": "Tests", "hidden": true }
   ],
   "packages": {
-    ".": { "component": "galdr" }
+    ".": { "component": "" }
   }
 }
