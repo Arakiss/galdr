@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.14.1](https://github.com/Arakiss/galdr/compare/v0.14.0...v0.14.1) (2026-06-30)
+
+
+### Documentation
+
+* correct harness-support and privacy-gate overclaims ([#65](https://github.com/Arakiss/galdr/issues/65)) ([b6806a8](https://github.com/Arakiss/galdr/commit/b6806a8f67dbc70070f5705861ead6e3e62adb98))
+* reframe substrate honestly, drop pixel-vs-toolcall hype ([#63](https://github.com/Arakiss/galdr/issues/63)) ([58a43ad](https://github.com/Arakiss/galdr/commit/58a43ad8393c5edf787e298a5f27d438ecadc883))
+
 ## [0.14.0](https://github.com/Arakiss/galdr/compare/v0.13.0...v0.14.0) (2026-06-30)
 
 
