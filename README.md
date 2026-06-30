@@ -150,8 +150,10 @@ galdr doctor                 # diagnose config, catalog, daemon, skills, and hoo
 galdr setup claude --check   # check Claude Code PostToolUse hook wiring
 galdr setup claude --print   # print the safe settings.json snippet
 galdr setup codex --check    # check Codex PostToolUse hook wiring (~/.codex/hooks.json)
-galdr setup codex --print    # print the safe Codex hooks snippet
-galdr tui                    # lazygit-style browser: recordings, spans, skills, harnesses
+galdr setup codex --print    # print the Codex hooks snippet (+ the trust step Codex needs)
+galdr setup cursor --check   # check Cursor postToolUse hook wiring (~/.cursor/hooks.json)
+galdr setup cursor --print   # print the Cursor hooks snippet
+galdr tui                    # terminal UI: an Overview dashboard + tabs over the catalog
 
 galdr diff <a> <b>           # diff two recordings: constants vs parameters
 galdr parametrize <a> <b> --emit   # write a parametrized SKILL.md (suffix -param)
@@ -175,16 +177,20 @@ galdr skills --json | jq '[.[] | select(.origin == "galdr")]'
 
 ### Terminal UI
 
-`galdr tui` is the browsable face — a lazygit-style cockpit over the same catalog, no
-flags to memorize. Three panels (Recordings · Skills · Harnesses), moved with `1`/`2`/`3`
-or `tab`, and a live preview that follows the selection:
+`galdr tui` is the human face — a terminal dashboard over the same catalog, no flags to
+memorize. It opens on an **Overview**: what you have (recordings, skills, average
+readiness), what needs attention (drafts awaiting authoring, recordings not yet a skill),
+recent activity, and harness wiring. Tabs (`1`–`4` or `tab`, the active one bracketed)
+switch between **Overview · Recordings · Skills · Harnesses**; each non-overview tab is a
+list with a full-width live preview:
 
-- **Recordings** — `enter` steps into the span; `d` distills a complete skill; `e`
-  exports it without raw payloads; `o` reveals the span path.
-- **Skills** — `enter` reads the `SKILL.md` (scrollable); `l` links it into every
-  installed harness; `v` validates it against the content gate; `O` records a success
-  outcome (the signal `galdr bench` reads).
-- `/` filters recordings and skills, `?` lists the keybindings, `q` quits.
+- **Recordings** — the steps, with setup/capture noise filtered out (galdr control
+  commands, screenshots, throwaway reads); `enter` drills into a step's raw payload; `d`
+  distills the faithful skill; `e` exports it without raw payloads.
+- **Skills** — the `SKILL.md` read at full width; `l` links it into every installed
+  harness; `v` validates it against the content gate; `O` records a success outcome (the
+  signal `galdr bench` reads).
+- `/` filters, `?` lists the keybindings, `q` quits.
 
 Every action the TUI takes is **local and additive** — it distills, links, validates,
 exports, and records outcomes. It never deletes a span, rewrites a skill behind your
@@ -197,8 +203,9 @@ fresh best-effort, so a closed recording or newly installed skill is visible wit
 waiting for a daemon process.
 
 `galdr doctor` checks the local root, config, daemon socket, active recording, rebuildable
-catalog, skill provenance, draft skills, and Claude Code hook wiring. `galdr setup claude
---print` emits the safe hook snippet; it never mutates your settings file.
+catalog, skill provenance and validation, draft skills, harness hook wiring, and any
+leftover authoring frames. `galdr setup … --print` emits a harness's hook snippet; it
+never mutates your settings file.
 
 `galdr skills` is a small skill catalog, not just a name list. It reports each
 skill's provenance, lifecycle status (`draft`, `final`, `param-draft`, `unknown`), a
@@ -246,10 +253,12 @@ on it.
 
 ## Wiring the sensor
 
-For the sensor to receive events, the harness must invoke `galdr hook` in its
-*after-each-tool* hook, passing the event on stdin. In Claude Code, add a `PostToolUse`
-entry to `~/.claude/settings.json` — hook arrays are concatenated, so it coexists with
-any other hooks you have:
+For the sensor to receive events, each harness must invoke `galdr hook` in its
+*after-each-tool* hook, passing the event on stdin. galdr prints the exact snippet per
+harness — `galdr setup claude --print`, `galdr setup codex --print`, or `galdr setup
+cursor --print` — and you merge it into that harness's hooks file (arrays are
+concatenated, so galdr coexists with any hooks you already have). In Claude Code that file
+is `~/.claude/settings.json`:
 
 ```json
 {
@@ -265,9 +274,12 @@ any other hooks you have:
 }
 ```
 
-The sensor reads the harness fields from stdin (`tool_name`, `tool_input`,
-`tool_response`, `cwd`, `session_id`, `transcript_path`) and is a no-op when no
-recording is active.
+The sensor reads the harness fields from stdin. Claude Code and Codex send `tool_name` /
+`tool_input` / `tool_response` / `cwd` / `session_id`; Cursor's `postToolUse` renames two
+(`tool_output`, `conversation_id`), which galdr maps — so the **same `galdr hook` records
+every harness**. It is a no-op when no recording is active. Two per-harness notes: Codex
+*skips an untrusted hook* until you trust it (`/hooks`), and Cursor's hooks file is
+versioned (`"version": 1`) — `galdr setup … --print` emits the right shape for each.
 
 If you prefer a resilient command that finds `galdr` on `PATH` and falls back to the
 cargo bin, that form works too and is recognized by `galdr doctor` / `setup claude
@@ -288,7 +300,7 @@ loads skills from its own directory, so galdr links the canonical skill into eac
 |---|---|---|
 | Claude Code | `~/.claude/skills` | `~/.claude/settings.json` PostToolUse hook |
 | Codex | `~/.codex/skills` | `~/.codex/hooks.json` PostToolUse hook (must be trusted in Codex) |
-| Cursor | `~/.cursor/skills-cursor` | — |
+| Cursor | `~/.cursor/skills-cursor` | `~/.cursor/hooks.json` postToolUse hook |
 
 The link is a symlink back to the canonical copy (the same mechanism a hand-linked
 skill already uses), created on install, never clobbering a real file of the same
@@ -405,11 +417,12 @@ Phase 2 (shipped):
   installs it as-is; `--auto` lets a local MLX model author it.
 - ✅ **Multi-harness discoverability** — a distilled skill is linked into every installed
   harness's skills directory (Claude Code, Codex, Cursor); `galdr link` / `doctor` manage it.
-- ✅ **Multi-harness sensor** — Codex has a native hooks system modeled on Claude Code's:
-  the same `PostToolUse` event and stdin payload, so `galdr hook` reads it unchanged.
-  `galdr setup codex --print` emits the snippet to merge into `~/.codex/hooks.json` and
-  the trust step Codex requires (it skips an untrusted hook); `galdr harnesses` shows
-  which harnesses are wired.
+- ✅ **Multi-harness sensor** — one `galdr hook` records every harness that exposes an
+  after-tool hook: Claude Code (`~/.claude/settings.json`), Codex, and Cursor all have a
+  native PostToolUse-family hook. Codex's payload matches Claude Code's; Cursor renames two
+  fields (`tool_output`, `conversation_id`) which galdr maps. `galdr setup <harness>
+  --print` emits each snippet (and the trust step Codex needs); `galdr harnesses` shows
+  which are wired.
 - ✅ **Session-scoped recording** — a recording binds to the session that started it, so a
   concurrent session in another project can't leak its tool calls into the span.
 - ✅ **AI-first CLI** — `--json` on every read command.
@@ -428,20 +441,26 @@ Phase 3 (shipped) — a surface humans and agents both want to use:
   against installed skills, and ranks the repeated tasks worth distilling.
 - ✅ **`galdr bench`** — aggregates recorded outcomes into a per-skill replay hit-rate
   and effort cost; the production signal a capability test cannot give.
-- ✅ **A lazygit-style TUI** — three panels, a live preview, and in-place actions
+- ✅ **An Overview-led TUI** — opens on a dashboard (counts, average readiness, what
+  needs authoring, recents) and switches between Overview · Recordings · Skills ·
+  Harnesses tabs; the recordings inspector hides setup/capture noise. In-place actions
   (distill, link, validate, export, record outcome), all local and additive.
+- ✅ **Vision-assisted authoring** — opt-in `capture.keep_frames` keeps stripped
+  screenshots as ephemeral PNGs so the authoring pass can *see* the screen and write
+  semantic steps for a GUI skill; surfaced in the brief, purged when the final skill
+  installs, never in the span or the skill.
+- ✅ **Cursor sensor** — Cursor's native `postToolUse` hook recorded via a small field
+  adapter, so all three detected harnesses (Claude Code, Codex, Cursor) can be wired.
 
 Next:
 
 - **Capture of human GUI gestures** — the deliberate scope gap above. The agent's *own*
-  browser automation is already captured (it arrives as tool calls). What's missing is
-  recording a *human* driving a browser by hand, which needs a separate pixel/DOM capture
-  layer on top of the span model — the one axis where Codex's pixel recorder does something
-  galdr does not, and a job for the extension seam rather than the core.
-- Verify the Codex sensor end to end with a live Codex recording. The payload is now
-  confirmed compatible (Codex's native `PostToolUse` carries the same `tool_name` /
-  `tool_input` / `tool_response` fields), so what remains is a live capture once the hook
-  is merged and trusted (`/hooks`).
+  browser/GUI automation is already captured (it arrives as tool calls); what's missing is
+  recording a *human* driving an app by hand, which needs a separate pixel/DOM capture
+  layer on top of the span model — a job for the extension seam rather than the core.
+- **Verify each sensor end to end with a live recording.** The payloads are confirmed
+  (Codex matches Claude Code; Cursor is field-mapped), so what remains is a live capture in
+  each harness once its hook is merged — and, for Codex, trusted via `/hooks`.
 - A multi-agent broker over the same span model.
 - Real gates and real provenance plugged into the extension layer (`PermissionGate`,
   `ProvenanceSink`) — where harness-specific policy or memory integrations live, kept out
