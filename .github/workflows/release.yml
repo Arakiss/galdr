@@ -336,8 +336,9 @@ jobs:
           subject-path: dist/galdr-${{ env.UPLOAD_TAG }}.cdx.json
 
   # 4) Publish the crate to crates.io on a `v*` tag, once the binaries are green.
-  #    Idempotent (skips a version already on crates.io) and safe before the token
-  #    exists (skips with a warning if CARGO_REGISTRY_TOKEN is unset).
+  #    Uses crates.io Trusted Publishing (OIDC) — no stored API token: the auth action
+  #    mints a short-lived, auto-revoked token. Idempotent (skips a version already on
+  #    crates.io). Requires a one-time trusted-publisher config on the crates.io crate.
   publish-crate:
     name: publish to crates.io
     if: >
@@ -348,22 +349,18 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      id-token: write # mint the crates.io OIDC token (Trusted Publishing)
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Publish galdr to crates.io
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Skip if this version is already on crates.io
+        id: state
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
-            echo "::warning::CARGO_REGISTRY_TOKEN is not set — skipping crates.io publish. Add it in repo Settings → Secrets and variables → Actions."
-            exit 0
-          fi
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             version="${{ github.event.inputs.tag }}"
           else
@@ -371,8 +368,17 @@ jobs:
           fi
           version="${version#v}"
           if curl -fsSL -H "User-Agent: galdr-release" "https://crates.io/api/v1/crates/galdr/${version}" >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
             echo "galdr ${version} is already on crates.io — nothing to publish."
-            exit 0
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "Publishing galdr ${version} to crates.io…"
-          cargo publish
+      - name: Authenticate to crates.io (Trusted Publishing)
+        if: steps.state.outputs.already == 'false'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+      - name: Publish galdr to crates.io
+        if: steps.state.outputs.already == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish
