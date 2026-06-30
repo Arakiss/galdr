@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.15.0](https://github.com/Arakiss/galdr/compare/v0.14.2...v0.15.0) (2026-06-30)
+
+
+### Features
+
+* add human observe browser workflows ([d40454b](https://github.com/Arakiss/galdr/commit/d40454b4c22e054bb2a59b3a91f03d575e8d22ba))
+
 ## [0.14.2](https://github.com/Arakiss/galdr/compare/v0.14.1...v0.14.2) (2026-06-30)
 
 
