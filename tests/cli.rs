@@ -901,9 +901,26 @@ fn human_events_reindex_show_distill_and_export() {
         "human literal",
         serde_json::json!({
             "policy": "literal",
-            "value": "petru@example.test"
+            "value": "Visible customer escalation"
         }),
     );
+    let literal_distill = sb.run(&["distill", "01HUMANLIT", "--fast"]);
+    assert!(
+        literal_distill.status.success(),
+        "{}",
+        stderr(&literal_distill)
+    );
+    let literal_skill = sb.skill_md("galdr-human-literal");
+    assert!(
+        !literal_skill.contains("Visible customer escalation"),
+        "literal typed text leaked into skill:\n{literal_skill}"
+    );
+    assert!(
+        literal_skill
+            .contains("- `<Issue title>` — text for Issue title at step 1 (27 chars recorded)"),
+        "{literal_skill}"
+    );
+
     let out = sb.home().join("human-export");
     let export = sb
         .cmd()
@@ -914,7 +931,7 @@ fn human_events_reindex_show_distill_and_export() {
         .unwrap();
     assert!(export.status.success(), "{}", stderr(&export));
     let raw = std::fs::read_to_string(out.join("raw.redacted.jsonl")).unwrap();
-    assert!(!raw.contains("petru@example.test"), "{raw}");
+    assert!(!raw.contains("Visible customer escalation"), "{raw}");
     assert!(raw.contains(r#""policy":"redacted""#), "{raw}");
     assert!(raw.contains(r#""kind":"literal""#), "{raw}");
 }

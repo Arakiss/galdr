@@ -926,9 +926,13 @@ fn human_notable_input(event: &Event, step: usize) -> Option<NotableInput> {
         .unwrap_or_else(|| human.action.as_str());
     match (action, human.value.as_ref()?) {
         ("input", HumanValue::Literal { value }) if !value.trim().is_empty() => {
+            let target = human_target_label(human).unwrap_or_else(|| "text value".to_string());
             Some(NotableInput {
-                value: value.clone(),
-                role: format!("text typed at step {step}"),
+                value: format!("<{target}>"),
+                role: format!(
+                    "text for {target} at step {step} ({} chars recorded)",
+                    value.chars().count()
+                ),
             })
         }
         ("input", HumanValue::Redacted { kind, chars }) => {
@@ -1242,6 +1246,41 @@ mod tests {
             md.contains(
                 "Confirm the page shows the expected result after activating Create issue."
             ),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn human_browser_render_never_promotes_literal_typed_text() {
+        let recording = Recording {
+            rec_id: "01HUMANLITERAL".into(),
+            name: "human literal form".into(),
+            started_at: "2026-06-24T00:00:00Z".into(),
+            ended_at: "2026-06-24T00:01:00Z".into(),
+            steps: 1,
+            cwd: Some("/Users/someone/Projects/galdr".into()),
+        };
+        let events = vec![human_browser_event(
+            0,
+            "human.browser.input",
+            Some(label_target("Issue title", Some("input"))),
+            Some(HumanValue::Literal {
+                value: "Visible customer escalation".into(),
+            }),
+        )];
+
+        let md = render_complete_skill("galdr-human-literal-form", &recording, &events);
+
+        assert!(
+            !md.contains("Visible customer escalation"),
+            "literal typed text must not survive in the skill:\n{md}"
+        );
+        assert!(
+            md.contains("- `<Issue title>` — text for Issue title at step 1 (27 chars recorded)"),
+            "{md}"
+        );
+        assert!(
+            md.contains("1. **Fill field** — type into input \"Issue title\" (text, 27 chars)"),
             "{md}"
         );
     }
