@@ -93,8 +93,14 @@ fn render_skill_preview<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>)
         Paragraph::new(app.preview_md.clone())
             .style(theme::text())
             .wrap(Wrap { trim: false })
+            .scroll((app.preview_scroll, 0))
     };
-    frame.render_widget(body.block(block(&format!("Skill · {name}"))), area);
+    let title = if app.focus == Panel::Skills && app.preview_focus {
+        format!("Skill · {name} · jk scroll")
+    } else {
+        format!("Skill · {name}")
+    };
+    frame.render_widget(body.block(block_focused(&title, app.preview_focus)), area);
 }
 
 /// Preview pane for the Harnesses panel: the selected harness, in detail.
@@ -179,13 +185,18 @@ fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
         return;
     }
     let hints = if app.preview_focus {
-        "jk step · enter raw · o span · esc back · ? help"
+        match app.focus {
+            Panel::Skills => "jk scroll · g top · esc back · ? help",
+            _ => "jk step · enter raw · o span · esc back · ? help",
+        }
     } else {
         match app.focus {
             Panel::Recordings => {
                 "jk move · enter inspect · d distill · e export · / filter · r replay · tab panel · ?"
             }
-            Panel::Skills => "jk move · l link · v validate · O outcome · / filter · tab panel · ?",
+            Panel::Skills => {
+                "jk move · enter read · l link · v validate · O outcome · / filter · tab · ?"
+            }
             Panel::Harnesses => "jk move · tab/1-3 panel · ? help · q quit",
         }
     };
@@ -551,6 +562,7 @@ fn help_body() -> Text<'static> {
         Line::raw("  r          what \"replay\" means · o show the span path"),
         Line::raw(""),
         Line::styled("Skills", theme::ok()),
+        Line::raw("  enter      read the SKILL.md (jk scroll · esc back)"),
         Line::raw("  l          link into every installed harness"),
         Line::raw("  v          validate against the content gate"),
         Line::raw("  O          record a success outcome (feeds `galdr bench`)"),
@@ -803,6 +815,22 @@ mod tests {
         app.on_key(key(KeyCode::Char('2'))); // Skills
         app.on_key(key(KeyCode::Char('v'))); // validate
         assert!(app.status.contains("galdr-tui-demo"), "{}", app.status);
+    }
+
+    #[test]
+    fn skill_preview_scrolls_when_focused() {
+        let mut app = App::new(fixture());
+        app.on_key(key(KeyCode::Char('2'))); // Skills
+        app.preview_md = "a\nb\nc\nd\ne".to_string(); // simulate a loaded SKILL.md
+        app.on_key(key(KeyCode::Enter)); // focus the preview to scroll
+        assert!(app.preview_focus);
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.preview_scroll, 2);
+        app.on_key(key(KeyCode::Char('g')));
+        assert_eq!(app.preview_scroll, 0);
+        app.on_key(key(KeyCode::Esc));
+        assert!(!app.preview_focus);
     }
 
     #[test]
