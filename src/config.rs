@@ -19,7 +19,7 @@ pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8080";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
-    /// `mlx-http` | `mlx-subprocess` | `agent`.
+    /// `mlx-http` | `agent`.
     pub engine: String,
     /// Loopback endpoint of the MLX HTTP server.
     pub endpoint: String,
