@@ -287,7 +287,7 @@ loads skills from its own directory, so galdr links the canonical skill into eac
 | Harness | Skills directory | Sensor wiring |
 |---|---|---|
 | Claude Code | `~/.claude/skills` | `~/.claude/settings.json` PostToolUse hook |
-| Codex | `~/.codex/skills` | `~/.codex/hooks.json` (same hook shape) |
+| Codex | `~/.codex/skills` | `~/.codex/hooks.json` PostToolUse hook (must be trusted in Codex) |
 | Cursor | `~/.cursor/skills-cursor` | — |
 
 The link is a symlink back to the canonical copy (the same mechanism a hand-linked
@@ -405,8 +405,11 @@ Phase 2 (shipped):
   installs it as-is; `--auto` lets a local MLX model author it.
 - ✅ **Multi-harness discoverability** — a distilled skill is linked into every installed
   harness's skills directory (Claude Code, Codex, Cursor); `galdr link` / `doctor` manage it.
-- ✅ **Multi-harness sensor** — `galdr setup codex` wires the same hook into Codex's
-  `hooks.json`; `galdr harnesses` shows which harnesses are wired.
+- ✅ **Multi-harness sensor** — Codex has a native hooks system modeled on Claude Code's:
+  the same `PostToolUse` event and stdin payload, so `galdr hook` reads it unchanged.
+  `galdr setup codex --print` emits the snippet to merge into `~/.codex/hooks.json` and
+  the trust step Codex requires (it skips an untrusted hook); `galdr harnesses` shows
+  which harnesses are wired.
 - ✅ **Session-scoped recording** — a recording binds to the session that started it, so a
   concurrent session in another project can't leak its tool calls into the span.
 - ✅ **AI-first CLI** — `--json` on every read command.
@@ -435,8 +438,10 @@ Next:
   recording a *human* driving a browser by hand, which needs a separate pixel/DOM capture
   layer on top of the span model — the one axis where Codex's pixel recorder does something
   galdr does not, and a job for the extension seam rather than the core.
-- Verify the Codex sensor end to end with a live Codex recording (the wiring is in place;
-  the stdin payload is not yet confirmed field-for-field).
+- Verify the Codex sensor end to end with a live Codex recording. The payload is now
+  confirmed compatible (Codex's native `PostToolUse` carries the same `tool_name` /
+  `tool_input` / `tool_response` fields), so what remains is a live capture once the hook
+  is merged and trusted (`/hooks`).
 - A multi-agent broker over the same span model.
 - Real gates and real provenance plugged into the extension layer (`PermissionGate`,
   `ProvenanceSink`) — where harness-specific policy or memory integrations live, kept out
