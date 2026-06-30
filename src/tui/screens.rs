@@ -270,6 +270,8 @@ fn render_recordings<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>
 }
 
 fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
+    let hidden = app.hidden_steps;
+    let focused = app.preview_focus;
     let Some(detail) = app.detail.as_ref() else {
         frame.render_widget(
             Paragraph::new("(no recording)").block(block("Inspector")),
@@ -306,7 +308,17 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
                     theme::dim()
                 },
             ),
-            Span::styled(format!("   ·   {} steps", detail.steps.len()), theme::dim()),
+            Span::styled(
+                if hidden > 0 {
+                    format!(
+                        "   ·   {} steps (+{hidden} setup hidden)",
+                        detail.steps.len()
+                    )
+                } else {
+                    format!("   ·   {} steps", detail.steps.len())
+                },
+                theme::dim(),
+            ),
             Span::styled(
                 format!("   ·   cwd: {}", rec.cwd.as_deref().unwrap_or("-")),
                 theme::dim(),
@@ -332,11 +344,16 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
         Constraint::Length(12),
         Constraint::Min(20),
     ];
+    let steps_title = if hidden > 0 {
+        format!("Steps · {hidden} setup/noise hidden")
+    } else {
+        "Steps".to_string()
+    };
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
         .highlight_symbol("▌ ")
-        .block(block_focused("Steps", app.preview_focus));
+        .block(block_focused(&steps_title, focused));
     frame.render_stateful_widget(table, chunks[1], &mut app.detail_state);
 }
 
@@ -758,6 +775,63 @@ mod tests {
         // The preview pane shows the selected recording's steps, live.
         assert!(s.contains("Steps"));
         assert!(s.contains("git status"));
+    }
+
+    #[test]
+    fn recording_detail_hides_setup_and_noise_steps() {
+        // A `galdr rec` control command is recorded but is capture noise, not a task
+        // step. The inspector must show only the meaningful steps and report how many it
+        // hid, so a human reads the task — not the scaffolding of its capture.
+        let recording = rec_row("01BBB", "noisy", true);
+        let detail = RecordingDetail {
+            recording: recording.clone(),
+            steps: vec![
+                StepRow {
+                    seq: 0,
+                    tool_name: "Bash".into(),
+                    ts: "t".into(),
+                    summary: "cargo build".into(),
+                },
+                StepRow {
+                    seq: 1,
+                    tool_name: "Bash".into(),
+                    ts: "t".into(),
+                    summary: "galdr rec status".into(),
+                },
+            ],
+        };
+        let raw = vec![
+            Event {
+                ts: "t".into(),
+                seq: 0,
+                tool_name: "Bash".into(),
+                tool_input: serde_json::json!({ "command": "cargo build" }),
+                tool_response: serde_json::json!({}),
+                cwd: None,
+                session_id: None,
+            },
+            Event {
+                ts: "t".into(),
+                seq: 1,
+                tool_name: "Bash".into(),
+                tool_input: serde_json::json!({ "command": "galdr rec status" }),
+                tool_response: serde_json::json!({}),
+                cwd: None,
+                session_id: None,
+            },
+        ];
+        let mock = MockCatalog {
+            recordings: vec![recording],
+            skills: vec![],
+            detail: Some(detail),
+            raw,
+        };
+        // `App::new` selects the first recording and projects its detail.
+        let app = App::new(mock);
+        assert_eq!(app.hidden_steps, 1, "the galdr control command is hidden");
+        let steps = &app.detail.as_ref().unwrap().steps;
+        assert_eq!(steps.len(), 1, "only the meaningful step remains");
+        assert_eq!(steps[0].summary, "cargo build");
     }
 
     #[test]

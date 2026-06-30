@@ -68,6 +68,9 @@ pub struct App<C: Catalog> {
     pub harness_state: TableState,
     pub detail: Option<RecordingDetail>,
     pub raw: Vec<crate::span::Event>,
+    /// How many recorded steps were hidden as setup/noise (galdr control commands,
+    /// screenshots, throwaway reads) so the detail reads as the task, not its capture.
+    pub hidden_steps: usize,
     pub detail_state: TableState,
 
     pub overlay: Option<Overlay>,
@@ -101,6 +104,7 @@ impl<C: Catalog> App<C> {
             harness_state: TableState::default(),
             detail: None,
             raw: Vec::new(),
+            hidden_steps: 0,
             detail_state: TableState::default(),
             overlay: None,
             overlay_scroll: 0,
@@ -395,11 +399,28 @@ impl<C: Catalog> App<C> {
             Panel::Recordings => {
                 if let Some(rec) = self.selected_recording() {
                     let id = rec.rec_id.clone();
-                    self.detail = self.catalog.detail(&id);
-                    self.raw = self.catalog.raw_events(&id);
+                    let mut detail = self.catalog.detail(&id);
+                    let raw_all = self.catalog.raw_events(&id);
+                    // Hide setup/noise (galdr control commands, screenshots, throwaway
+                    // reads) so the inspector reads as the task, not its capture — the
+                    // same filter the distiller uses. Keep detail and raw aligned by seq,
+                    // since the raw drill-in indexes them in parallel.
+                    let meaningful = crate::distill::meaningful_steps(&raw_all);
+                    let keep: std::collections::HashSet<u64> =
+                        meaningful.iter().map(|e| e.seq).collect();
+                    self.hidden_steps = if let Some(d) = detail.as_mut() {
+                        let before = d.steps.len();
+                        d.steps.retain(|s| keep.contains(&(s.seq as u64)));
+                        before - d.steps.len()
+                    } else {
+                        0
+                    };
+                    self.detail = detail;
+                    self.raw = meaningful;
                 } else {
                     self.detail = None;
                     self.raw.clear();
+                    self.hidden_steps = 0;
                 }
                 let steps = self.detail.as_ref().map_or(0, |d| d.steps.len());
                 clamp_selection(&mut self.detail_state, steps);
