@@ -97,6 +97,16 @@ pub fn run() -> Result<()> {
     if denied_by_capture_policy(&event, &capture) {
         return Ok(());
     }
+    // Opt-in: keep the pixels as ephemeral authoring frames *before* they are stripped
+    // from the span. They never enter the span; they are vision scaffolding for distill.
+    if capture.keep_frames {
+        save_frames(
+            &active.rec_id,
+            event.seq,
+            &event.tool_input,
+            &event.tool_response,
+        );
+    }
     // Drop screenshot/base64 blobs before anything else so the span stores the
     // action, never the pixels (smaller, and no on-screen content leaks).
     if capture.strip_screenshots {
@@ -330,6 +340,113 @@ fn is_base64ish(s: &str) -> bool {
     ok as f64 / s.len() as f64 > 0.95
 }
 
+/// Saves any image blobs in this event as ephemeral PNG frames under
+/// `~/.galdr/frames/<rec_id>/`. Best-effort and silent: a failed frame never affects
+/// the recording (the span is the truth; frames are disposable authoring scaffolding).
+fn save_frames(rec_id: &str, seq: u64, input: &serde_json::Value, response: &serde_json::Value) {
+    let Ok(dir) = paths::frames_dir(rec_id) else {
+        return;
+    };
+    write_image_blobs(&dir, seq, input, response);
+}
+
+/// Collects image blobs from `input`/`response`, decodes them, and writes one PNG per
+/// blob to `dir` (`<seq>.png`, `<seq>-1.png`, …). Returns how many were written. Split
+/// from [`save_frames`] so the path resolution is injectable in tests.
+fn write_image_blobs(
+    dir: &std::path::Path,
+    seq: u64,
+    input: &serde_json::Value,
+    response: &serde_json::Value,
+) -> usize {
+    let mut blobs = Vec::new();
+    collect_image_blobs(input, &mut blobs);
+    collect_image_blobs(response, &mut blobs);
+    if blobs.is_empty() {
+        return 0;
+    }
+    if std::fs::create_dir_all(dir).is_err() {
+        return 0;
+    }
+    let mut written = 0;
+    for (i, b64) in blobs.iter().enumerate() {
+        let Some(bytes) = decode_base64(b64) else {
+            continue;
+        };
+        let name = if i == 0 {
+            format!("{seq:04}.png")
+        } else {
+            format!("{seq:04}-{i}.png")
+        };
+        if std::fs::write(dir.join(name), bytes).is_ok() {
+            written += 1;
+        }
+    }
+    written
+}
+
+/// Read-only twin of [`strip_screenshots`]: walks the value with the same image-context
+/// rules and collects the base64 payloads (data-URI prefix removed) instead of replacing
+/// them. Keeping the detection identical means a frame is saved for exactly what is
+/// stripped — never an arbitrary string.
+fn collect_image_blobs(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let image_ctx = is_image_context(map);
+            for (key, v) in map {
+                match v.as_str() {
+                    Some(s) if is_data_uri_image(s) => {
+                        if let Some((_, b64)) = s.split_once(',') {
+                            out.push(b64.to_string());
+                        }
+                    }
+                    Some(s) if (image_ctx || is_image_key(key)) && is_base64ish(s) => {
+                        out.push(s.to_string());
+                    }
+                    _ => collect_image_blobs(v, out),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_image_blobs(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Decodes standard or URL-safe base64 (no external crate — fewer deps, no supply-chain
+/// surface for a defensive local tool). Skips padding and whitespace; returns `None` on
+/// any out-of-alphabet byte so a malformed blob writes no frame rather than garbage.
+fn decode_base64(s: &str) -> Option<Vec<u8>> {
+    fn sextet(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(s.len() / 4 * 3);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &c in s.as_bytes() {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        buf = (buf << 6) | sextet(c)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 fn apply_response_cap(event: &mut span::Event, max_chars: Option<usize>) {
     let Some(max_chars) = max_chars else {
         return;
@@ -367,6 +484,44 @@ mod tests {
         assert!(!data.contains("iVBORw0KGgo"));
         // The action is untouched.
         assert_eq!(input["action"], "screenshot");
+    }
+
+    #[test]
+    fn decode_base64_matches_known_values() {
+        assert_eq!(decode_base64("aGVsbG8=").unwrap(), b"hello");
+        assert_eq!(decode_base64("aGVsbG8gd29ybGQ=").unwrap(), b"hello world");
+        // padding optional, embedded whitespace skipped
+        assert_eq!(decode_base64("aGVs\nbG8").unwrap(), b"hello");
+        // an out-of-alphabet byte yields nothing rather than garbage
+        assert!(decode_base64("abc!def").is_none());
+    }
+
+    #[test]
+    fn keep_frames_writes_a_png_and_ignores_action_fields() {
+        let b64 = "iVBORw0KGgoAAAANSUhEUg".repeat(4); // ≥64 base64-ish chars
+        let response = serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": "image/png", "data": b64 }
+        });
+        // Action fields are not images: they must produce no frame.
+        let input = serde_json::json!({ "action": "screenshot", "coordinate": [10, 20] });
+
+        let dir = std::env::temp_dir().join(format!("galdr-frames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let written = write_image_blobs(&dir, 7, &input, &response);
+        assert_eq!(
+            written, 1,
+            "exactly the one screenshot blob becomes a frame"
+        );
+
+        let png = dir.join("0007.png");
+        assert!(png.exists(), "frame written at the seq-named path");
+        assert_eq!(
+            std::fs::read(&png).unwrap(),
+            decode_base64(&b64).unwrap(),
+            "the frame holds the decoded pixels"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

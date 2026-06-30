@@ -111,6 +111,24 @@ pub fn run() -> Result<()> {
         }
     }
 
+    if let Ok(root) = paths::frames_root()
+        && root.is_dir()
+    {
+        let leftover = std::fs::read_dir(&root)
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .count()
+            })
+            .unwrap_or(0);
+        if leftover > 0 {
+            warn(format!(
+                "{leftover} recording(s) have leftover authoring frames (pixels on disk) at {}; they purge on a final distill, or delete the directory",
+                root.display()
+            ));
+        }
+    }
+
     if issues.is_empty() {
         println!("{}", style::green("doctor: ok"));
         Ok(())

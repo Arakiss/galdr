@@ -329,7 +329,8 @@ length limit.
     "deny_tools": ["SecretTool"],
     "deny_cwd_prefixes": ["/private/project"],
     "max_response_chars": 4000,
-    "strip_screenshots": true
+    "strip_screenshots": true,
+    "keep_frames": false
   }
 }
 ```
@@ -343,6 +344,15 @@ screenshot, an image content block — from the recorded event, keeping the *act
 on-screen content, and they are never the reusable signal; the action is. This is what
 lets galdr record a GUI task the agent drives via Computer Use and distill it into a
 clean, semantic skill — the agent's GUI work is just more tool calls.
+
+`keep_frames` (**off** by default) is the deliberate exception: with it on, a stripped
+screenshot is also written as an **ephemeral** PNG under `~/.galdr/frames/<rec_id>/`, so
+the authoring pass can *see* the screen and write better semantic steps for a GUI skill
+("click the New Note button, top-left") instead of bare coordinates. `galdr distill`
+surfaces the frames in its authoring brief, and they are **purged when a final skill
+installs**. The frames never enter the span, the skill, or an export — pixels are
+scaffolding to *produce* the skill, not part of it. It is opt-in precisely because it
+puts pixels on disk; `galdr doctor` flags any that linger.
 
 ## Extension points
 

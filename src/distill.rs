@@ -128,8 +128,16 @@ fn write_draft(
     let home = paths::home_dir().map(|p| p.display().to_string());
     let span_ref =
         validate::generalize_session_text(&span_path.display().to_string(), home.as_deref());
-    print_authoring_brief(&skill_path, &span_ref, meaningful_steps(&events).len());
+    print_authoring_brief(id, &skill_path, &span_ref, meaningful_steps(&events).len());
     Ok(())
+}
+
+/// The path to a recording's ephemeral authoring frames, if any were kept
+/// (`capture.keep_frames`). `None` when the directory is absent or empty.
+fn frames_hint(rec_id: &str) -> Option<String> {
+    let dir = paths::frames_dir(rec_id).ok()?;
+    let has_any = std::fs::read_dir(&dir).ok()?.next().is_some();
+    has_any.then(|| tilde(&dir))
 }
 
 /// Inserts a discreet machine marker above the title so `warn_on_overwrite` (and a
@@ -146,13 +154,18 @@ fn mark_unauthored(skill_name: &str, body: &str) -> String {
 /// The authoring brief: what galdr captured, and the judgment the agent must add to turn
 /// a faithful replay into a skill worth reusing. This is where the intelligence galdr
 /// deliberately does not fake enters the loop — the agent is the author, galdr the scribe.
-fn print_authoring_brief(skill_path: &Path, span_ref: &str, steps: usize) {
+fn print_authoring_brief(rec_id: &str, skill_path: &Path, span_ref: &str, steps: usize) {
     println!(
         "{} faithful draft of {steps} step(s) written — now author the real skill.",
         crate::style::accent("●")
     );
     println!("  draft:  {}", tilde(skill_path));
     println!("  span:   {span_ref}   (full tool_input/tool_response, one JSON line per step)");
+    if let Some(frames) = frames_hint(rec_id) {
+        println!(
+            "  frames: {frames}   (screenshots of each step — read them to author with vision; purged on install)"
+        );
+    }
     println!();
     println!("galdr captured WHAT ran; you supply WHY. Read the span and rewrite the draft:");
     println!("  - Description / When to use: the real problem it solves and when to reach for");
@@ -298,6 +311,11 @@ fn install_skill(
     );
 
     note_skill_written(skill_name, &skill_path, rec_id, catalog::STATUS_FINAL);
+    // Authoring is done, so the ephemeral frames have served their purpose: purge the
+    // pixels. They were scaffolding to produce the skill, never part of it.
+    if let Ok(frames) = paths::frames_dir(rec_id) {
+        let _ = std::fs::remove_dir_all(frames);
+    }
     // A skill the harness can't find is useless: make the finished skill discoverable
     // in every installed harness (Claude Code, Codex, Cursor) by linking it in.
     report_discoverability(skill_name);
