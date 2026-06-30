@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.12.0](https://github.com/Arakiss/galdr/compare/v0.11.0...v0.12.0) (2026-06-30)
+
+
+### Features
+
+* **tui:** actions from the panels (phase 2) ([#44](https://github.com/Arakiss/galdr/issues/44)) ([b88879d](https://github.com/Arakiss/galdr/commit/b88879dd0c7a3e46270690b8845a6ed7e5055ead))
+* **tui:** scrollable, focusable skill preview (phase 3) ([#46](https://github.com/Arakiss/galdr/issues/46)) ([9bccd4a](https://github.com/Arakiss/galdr/commit/9bccd4ab2d97b6283a57c7d51f5d1e2d1031dd5c))
+
 ## [0.11.0](https://github.com/Arakiss/galdr/compare/v0.10.0...v0.11.0) (2026-06-30)
 
 
