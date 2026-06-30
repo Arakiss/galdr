@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.13.0](https://github.com/Arakiss/galdr/compare/v0.12.0...v0.13.0) (2026-06-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **distill:** `galdr distill` with no flags now writes an unauthored draft and prints an authoring brief instead of installing a finished skill; use `--fast` for the previous one-step behavior. The `--draft` flag is removed (it is now the default).
+
+### Features
+
+* **distill:** author skills by default; --fast for mechanical render ([#47](https://github.com/Arakiss/galdr/issues/47)) ([1f9877d](https://github.com/Arakiss/galdr/commit/1f9877d55243ac342d88b4f729def5e4bd97bc58))
+
 ## [0.12.0](https://github.com/Arakiss/galdr/compare/v0.11.0...v0.12.0) (2026-06-30)
 
 
