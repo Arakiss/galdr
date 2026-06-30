@@ -32,7 +32,7 @@ jobs:
       pull-requests: write
       statuses: write
     steps:
-      - name: Recover merged release PRs left untagged
+      - name: Report merged release PRs left untagged
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -68,33 +68,18 @@ jobs:
 
           version="${BASH_REMATCH[1]}"
           tag="v${version}"
-          notes_file="$(mktemp)"
-          gh pr view "${pr_number}" --repo "${repo}" --json body --jq '.body' > "${notes_file}"
-
           if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
             echo "Release ${tag} already exists; marking PR #${pr_number} tagged."
-          else
-            echo "Recovering merged release PR #${pr_number} as ${tag} at ${pr_sha}."
-            if gh api "repos/${repo}/git/ref/tags/${tag}" >/dev/null 2>&1; then
-              gh release create "${tag}" \
-                --repo "${repo}" \
-                --verify-tag \
-                --title "galdr ${version}" \
-                --notes-file "${notes_file}"
-            else
-              gh release create "${tag}" \
-                --repo "${repo}" \
-                --target "${pr_sha}" \
-                --title "galdr ${version}" \
-                --notes-file "${notes_file}"
-            fi
-
-            gh workflow run release.yml --repo "${repo}" --ref "${tag}" -f "tag=${tag}"
+            gh pr edit "${pr_number}" --repo "${repo}" \
+              --remove-label 'autorelease: pending' \
+              --add-label 'autorelease: tagged'
+            exit 0
           fi
 
-          gh pr edit "${pr_number}" --repo "${repo}" \
-            --remove-label 'autorelease: pending' \
-            --add-label 'autorelease: tagged'
+          echo "::warning::Merged release PR #${pr_number} is still untagged (${tag} at ${pr_sha})."
+          echo "::warning::The repository token cannot create releases in this repo; recover this with a user-approved release cut, then rerun the release workflow."
+          echo "Pending release PR: ${pr_title}"
+          exit 0
       - id: release
         uses: googleapis/release-please-action@v5
         with:
