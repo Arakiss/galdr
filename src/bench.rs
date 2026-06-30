@@ -164,34 +164,56 @@ pub fn run(skill: Option<&str>, json: bool) -> Result<()> {
     }
 
     println!(
-        "Replay reliability — {} recorded outcome(s) across {} skill(s); fleet hit-rate {:.0}%\n",
+        "{} — {} recorded outcome(s) across {} skill(s); fleet hit-rate {}\n",
+        crate::style::bold("Replay reliability"),
         report.total_replays,
         report.skills_measured,
-        report.overall_success_rate * 100.0,
+        rate_colored(report.overall_success_rate, 0),
     );
     println!(
-        "{:<32} {:>5} {:>7} {:>6} {:>8} {:>7}",
-        "skill", "uses", "hit", "eff", "retries", "ready"
+        "{}",
+        crate::style::dim(&format!(
+            "{:<32} {:>5} {:>7} {:>6} {:>8} {:>7}",
+            "skill", "uses", "hit", "eff", "retries", "ready"
+        ))
     );
     for s in &report.skills {
         let ready = s
             .readiness
             .map(|r| r.to_string())
             .unwrap_or_else(|| "—".to_string());
+        // The hit-rate is colored by value; pad first so color codes never skew columns.
+        let hit = rate_colored(s.success_rate, 6);
         println!(
-            "{:<32} {:>5} {:>6.0}% {:>5.0}% {:>8.2} {:>7}",
-            truncate(&s.skill_name, 32),
+            "{} {:>5} {} {:>5.0}% {:>8.2} {:>7}",
+            crate::style::accent(&format!("{:<32}", truncate(&s.skill_name, 32))),
             s.uses,
-            s.success_rate * 100.0,
+            hit,
             s.effective_rate * 100.0,
             s.avg_retries,
             ready,
         );
     }
     println!(
-        "\nhit = clean replays / uses · eff = partial counts half · retries = avg per replay (lower is better)"
+        "\n{}",
+        crate::style::dim(
+            "hit = clean replays / uses · eff = partial counts half · retries = avg per replay (lower is better)"
+        )
     );
     Ok(())
+}
+
+/// A percentage colored by health: green ≥ 80%, amber ≥ 50%, red below — padded to
+/// `width` first so the ANSI codes never skew column alignment.
+fn rate_colored(rate: f64, width: usize) -> String {
+    let pct = format!("{:>width$.0}%", rate * 100.0);
+    if rate >= 0.8 {
+        crate::style::green(&pct)
+    } else if rate >= 0.5 {
+        crate::style::amber(&pct)
+    } else {
+        crate::style::red(&pct)
+    }
 }
 
 /// Truncates a skill name to fit the column, with an ellipsis if cut.

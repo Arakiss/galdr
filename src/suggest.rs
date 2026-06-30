@@ -114,17 +114,21 @@ fn detect(shapes: Vec<RecShape>, min_count: usize) -> Vec<Opportunity> {
 
 /// The next-action sentence for a group.
 fn recommend(members: &[RecShape]) -> String {
+    // The distill suggestion uses the recording *name* (distill resolves it to the most
+    // recent of that name) so nobody copies a ULID; parametrize needs two distinct
+    // recordings, so it keeps the ids.
+    let name = &members[0].name;
     let newest = &members[0].rec_id;
     if members.len() >= 2 {
         format!(
             "Recorded {}× and not a skill yet — `galdr distill {}`, or record it once more and `galdr parametrize {} {}` to name the inputs that vary.",
             members.len(),
-            newest,
+            name,
             members[1].rec_id,
             newest,
         )
     } else {
-        format!("Recorded once and not distilled — `galdr distill {newest}` to crystallize it.")
+        format!("Recorded once and not distilled — `galdr distill {name}` to crystallize it.")
     }
 }
 
@@ -192,22 +196,28 @@ pub fn run(json: bool, top: Option<usize>, min_count: usize) -> Result<()> {
         return Ok(());
     }
 
-    println!("Skill opportunities — repeated tasks not yet distilled:\n");
+    println!(
+        "{}\n",
+        crate::style::bold("Skill opportunities — repeated tasks not yet distilled:")
+    );
     for (i, opp) in opportunities.iter().enumerate() {
         let lead = &opp.recordings[0];
         println!(
-            "{:>2}. {} ×{}  ({} step{})  score {}",
+            "{:>2}. {} {}  ({} step{})  {}",
             i + 1,
-            lead.name,
-            opp.count,
+            crate::style::accent(&lead.name),
+            crate::style::bold(&format!("×{}", opp.count)),
             opp.steps,
             if opp.steps == 1 { "" } else { "s" },
-            opp.score,
+            crate::style::dim(&format!("score {}", opp.score)),
         );
         println!("    {}", opp.recommendation);
         if opp.count > 1 {
             let others: Vec<&str> = opp.recordings.iter().map(|r| r.rec_id.as_str()).collect();
-            println!("    recordings: {}", others.join(", "));
+            println!(
+                "    {}",
+                crate::style::dim(&format!("recordings: {}", others.join(", ")))
+            );
         }
     }
     Ok(())
@@ -249,7 +259,8 @@ mod tests {
         assert_eq!(opps[0].count, 2);
         // Most recent recording leads the recommendation.
         assert_eq!(opps[0].recordings[0].rec_id, "b");
-        assert!(opps[0].recommendation.contains("galdr distill b"));
+        // distill suggestion uses the (most-recent) recording name, not a ULID.
+        assert!(opps[0].recommendation.contains("galdr distill task-b"));
         assert!(opps[0].recommendation.contains("galdr parametrize a b"));
     }
 
