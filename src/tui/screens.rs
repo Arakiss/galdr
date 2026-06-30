@@ -844,6 +844,7 @@ mod tests {
             steps: vec![StepRow {
                 seq: 0,
                 tool_name: "Bash".into(),
+                event_kind: "tool_call".into(),
                 ts: "2026-06-19T10:00:01Z".into(),
                 summary: "git status".into(),
             }],
@@ -885,6 +886,8 @@ mod tests {
                 tool_response: serde_json::json!({ "exit_code": 0 }),
                 cwd: Some("/proj/demo".into()),
                 session_id: None,
+                event_kind: crate::span::EventKind::ToolCall,
+                human: None,
             }],
         }
     }
@@ -935,12 +938,14 @@ mod tests {
                 StepRow {
                     seq: 0,
                     tool_name: "Bash".into(),
+                    event_kind: "tool_call".into(),
                     ts: "t".into(),
                     summary: "cargo build".into(),
                 },
                 StepRow {
                     seq: 1,
                     tool_name: "Bash".into(),
+                    event_kind: "tool_call".into(),
                     ts: "t".into(),
                     summary: "galdr rec status".into(),
                 },
@@ -955,6 +960,8 @@ mod tests {
                 tool_response: serde_json::json!({}),
                 cwd: None,
                 session_id: None,
+                event_kind: crate::span::EventKind::ToolCall,
+                human: None,
             },
             Event {
                 ts: "t".into(),
@@ -964,6 +971,8 @@ mod tests {
                 tool_response: serde_json::json!({}),
                 cwd: None,
                 session_id: None,
+                event_kind: crate::span::EventKind::ToolCall,
+                human: None,
             },
         ];
         let mock = MockCatalog {

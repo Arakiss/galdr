@@ -227,7 +227,7 @@ fn handle_request(db: &Db, req: Request) -> Response {
         Request::Ping => Response::Pong,
         Request::Shutdown => Response::Ack,
         Request::EventAppended { rec_id, event } => with_db(db, |c| {
-            catalog::index_event(c, &rec_id, &event).map(|()| Response::Ack)
+            catalog::index_event(c, &rec_id, event.as_ref()).map(|()| Response::Ack)
         }),
         Request::RecordingClosed { recording } => with_db(db, |c| {
             catalog::index_recording(c, &recording).map(|()| Response::Ack)

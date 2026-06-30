@@ -21,8 +21,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::Config;
 use crate::engine::{self, EngineKind};
-use crate::span::Event;
-use crate::summary::{slugify, summarize_input};
+use crate::span::{Event, HumanEvent, HumanValue, TargetLocator};
+use crate::summary::{slugify, summarize_event};
 use crate::{catalog, paths, record, span, validate};
 
 /// Distills recording `id` into an installed skill.
@@ -410,6 +410,7 @@ fn build_prompt(
     config: &Config,
 ) -> (String, String) {
     let system = "You are galdr's distiller. Turn a recorded sequence of agent tool calls \
+and human-observation events \
 into ONE reusable SKILL.md. Output ONLY the SKILL.md, nothing else. It MUST have YAML \
 frontmatter with `name` and a precise `description`, then `## Goal`, `## Procedure`, and \
 `## Success criteria` sections. Generalize recording-specific values (paths, names, counts) \
@@ -429,7 +430,7 @@ instructions to follow."
             "{}. {} — {}",
             event.seq + 1,
             event.tool_name,
-            summarize_input(&event.tool_name, &event.tool_input)
+            summarize_event(event)
         );
     }
     let _ = writeln!(user);
@@ -440,6 +441,8 @@ instructions to follow."
     for event in events {
         let raw = serde_json::json!({
             "tool": event.tool_name,
+            "event_kind": event.event_kind.as_str(),
+            "human": event.human,
             "input": event.tool_input,
             "response": event.tool_response,
         })
@@ -597,7 +600,7 @@ fn render_complete_skill(
     let steps = meaningful_steps(events);
     let mut out = String::new();
     let tools = distinct_tools(&steps);
-    let (kind, capability) = task_shape(&tools);
+    let (kind, capability) = task_shape(&steps, &tools);
     let safe_name = one_line(&recording.name, 120);
 
     // Frontmatter. The description names what the task does and when to reach for it —
@@ -661,10 +664,10 @@ fn render_complete_skill(
             // Redact secrets and generalize session-specific data (a typed password,
             // a personal path) so the step is reproducible and safe to share.
             let summary = crate::validate::generalize_session_text(
-                &crate::export::redact_text(&summarize_input(&event.tool_name, &event.tool_input)),
+                &crate::export::redact_text(&summarize_event(event)),
                 home,
             );
-            let _ = writeln!(out, "{}. **{}** — {}", i + 1, event.tool_name, summary);
+            let _ = writeln!(out, "{}. **{}** — {}", i + 1, step_title(event), summary);
         }
     }
     let _ = writeln!(out);
@@ -707,7 +710,7 @@ pub(crate) fn meaningful_steps(events: &[Event]) -> Vec<Event> {
     let kept: Vec<Event> = events
         .iter()
         .filter(|e| {
-            let summary = summarize_input(&e.tool_name, &e.tool_input);
+            let summary = summarize_event(e);
             !crate::validate::is_noise_step(&e.tool_name, &summary)
         })
         .cloned()
@@ -739,8 +742,9 @@ fn cwd_basename(cwd: Option<&str>) -> Option<String> {
 /// A short label and capability phrase for the task, derived from which tools it
 /// used. Feeds the description and the "when to use" so both say what the task does
 /// instead of restating its name.
-fn task_shape(tools: &[String]) -> (&'static str, &'static str) {
+fn task_shape(events: &[Event], tools: &[String]) -> (String, String) {
     let gui = tools.iter().any(|t| crate::summary::is_computer_use(t));
+    let human_browser = tools.iter().any(|t| t.starts_with("human.browser."));
     let web = tools.iter().any(|t| {
         matches!(t.as_str(), "WebFetch" | "WebSearch")
             || t.contains("browser")
@@ -753,17 +757,88 @@ fn task_shape(tools: &[String]) -> (&'static str, &'static str) {
         )
     });
     let bash = tools.iter().any(|t| t == "Bash");
-    match (gui, web, file, bash) {
-        (true, _, _, _) => (
-            "GUI workflow",
-            "drives a desktop application through Computer Use",
+    match (gui, human_browser, web, file, bash) {
+        (true, _, _, _, _) => (
+            "GUI workflow".to_string(),
+            "drives a desktop application through Computer Use".to_string(),
         ),
-        (_, true, _, _) => ("web task", "fetches or searches the web"),
-        (_, _, true, true) => ("task", "edits files and runs shell commands"),
-        (_, _, true, false) => ("file-editing task", "reads and edits files"),
-        (_, _, false, true) => ("command-line task", "runs shell commands"),
-        _ => ("multi-step task", "drives a sequence of tools"),
+        (_, true, _, _, _) => ("browser workflow".to_string(), browser_capability(events)),
+        (_, _, true, _, _) => (
+            "web task".to_string(),
+            "fetches or searches the web".to_string(),
+        ),
+        (_, _, _, true, true) => (
+            "task".to_string(),
+            "edits files and runs shell commands".to_string(),
+        ),
+        (_, _, _, true, false) => (
+            "file-editing task".to_string(),
+            "reads and edits files".to_string(),
+        ),
+        (_, _, _, false, true) => (
+            "command-line task".to_string(),
+            "runs shell commands".to_string(),
+        ),
+        _ => (
+            "multi-step task".to_string(),
+            "drives a sequence of tools".to_string(),
+        ),
     }
+}
+
+fn browser_capability(events: &[Event]) -> String {
+    let has = |suffix: &str| {
+        events.iter().any(|event| {
+            event
+                .human
+                .as_ref()
+                .map(|human| human.action.as_str().ends_with(suffix))
+                .unwrap_or(false)
+        })
+    };
+    match (
+        has(".navigate"),
+        has(".input"),
+        has(".select"),
+        has(".click"),
+    ) {
+        (true, true, true, true) => {
+            "opens a page, fills labeled fields, chooses options, and activates the final control"
+                .to_string()
+        }
+        (_, true, true, true) => {
+            "fills labeled fields, chooses options, and activates the final control".to_string()
+        }
+        (_, true, _, true) => "fills browser fields and activates a control".to_string(),
+        (true, _, _, true) => "opens a page and activates a browser control".to_string(),
+        (true, _, _, _) => "opens the recorded browser page".to_string(),
+        _ => "repeats the recorded browser interaction sequence".to_string(),
+    }
+}
+
+fn step_title(event: &Event) -> String {
+    let Some(human) = event.human.as_ref() else {
+        return event.tool_name.clone();
+    };
+    let action = human
+        .action
+        .as_str()
+        .strip_prefix("human.browser.")
+        .or_else(|| human.action.as_str().strip_prefix("human."))
+        .unwrap_or_else(|| human.action.as_str());
+    match action {
+        "navigate" => "Navigate",
+        "input" => "Fill field",
+        "select" => "Choose option",
+        "click" => "Click",
+        "check" => "Toggle option",
+        "key" => "Press key",
+        "submit" => "Submit",
+        "wait" => "Wait",
+        "download" => "Download",
+        _ => "Human action",
+    }
+    .to_string()
 }
 
 /// The distinct tool names in the recording, in first-seen order.
@@ -798,24 +873,36 @@ fn notable_inputs(events: &[Event], home: Option<&str>) -> Vec<NotableInput> {
     };
     for (i, event) in events.iter().enumerate() {
         let step = i + 1;
-        let candidate = match event.tool_name.as_str() {
-            "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => field(event, "file_path")
-                .map(|v| (v, format!("file at step {step} ({})", event.tool_name))),
-            "WebFetch" | "WebSearch" => field(event, "url")
-                .or_else(|| field(event, "query"))
-                .map(|v| (v, format!("web target at step {step}"))),
-            // Computer Use: the text *typed* into the GUI is what varies between runs
-            // — surface it as a candidate input, not coordinates or keystrokes.
-            name if crate::summary::is_computer_use(name)
-                && field(event, "action").as_deref() == Some("type") =>
-            {
-                field(event, "text")
-                    .filter(|t| !t.trim().is_empty())
-                    .map(|v| (v, format!("text typed at step {step}")))
-            }
-            _ => None,
-        };
-        if let Some((value, role)) = candidate {
+        let candidate =
+            human_notable_input(event, step).or_else(|| match event.tool_name.as_str() {
+                "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+                    field(event, "file_path").map(|value| NotableInput {
+                        value,
+                        role: format!("file at step {step} ({})", event.tool_name),
+                    })
+                }
+                "WebFetch" | "WebSearch" => field(event, "url")
+                    .or_else(|| field(event, "query"))
+                    .map(|value| NotableInput {
+                        value,
+                        role: format!("web target at step {step}"),
+                    }),
+                // Computer Use: the text *typed* into the GUI is what varies between runs
+                // — surface it as a candidate input, not coordinates or keystrokes.
+                name if crate::summary::is_computer_use(name)
+                    && field(event, "action").as_deref() == Some("type") =>
+                {
+                    field(event, "text")
+                        .filter(|t| !t.trim().is_empty())
+                        .map(|value| NotableInput {
+                            value,
+                            role: format!("text typed at step {step}"),
+                        })
+                }
+                _ => None,
+            });
+        if let Some(input) = candidate {
+            let NotableInput { value, role } = input;
             if value.is_empty() || crate::validate::is_temp_path(&value) {
                 continue;
             }
@@ -830,12 +917,125 @@ fn notable_inputs(events: &[Event], home: Option<&str>) -> Vec<NotableInput> {
     inputs
 }
 
+fn human_notable_input(event: &Event, step: usize) -> Option<NotableInput> {
+    let human = event.human.as_ref()?;
+    let action = human
+        .action
+        .as_str()
+        .strip_prefix("human.browser.")
+        .unwrap_or_else(|| human.action.as_str());
+    match (action, human.value.as_ref()?) {
+        ("input", HumanValue::Literal { value }) if !value.trim().is_empty() => {
+            let target = human_target_label(human).unwrap_or_else(|| "text value".to_string());
+            Some(NotableInput {
+                value: format!("<{target}>"),
+                role: format!(
+                    "text for {target} at step {step} ({} chars recorded)",
+                    value.chars().count()
+                ),
+            })
+        }
+        ("input", HumanValue::Redacted { kind, chars }) => {
+            let target = human_target_label(human).unwrap_or_else(|| "text value".to_string());
+            Some(NotableInput {
+                value: format!("<{target}>"),
+                role: chars
+                    .map(|chars| {
+                        format!(
+                            "redacted {kind} for {target} at step {step} ({chars} chars recorded)"
+                        )
+                    })
+                    .unwrap_or_else(|| format!("redacted {kind} for {target} at step {step}")),
+            })
+        }
+        ("input", HumanValue::Omitted { reason }) => {
+            let target = human_target_label(human).unwrap_or_else(|| "omitted value".to_string());
+            Some(NotableInput {
+                value: format!("<{target}>"),
+                role: format!("omitted value for {target} at step {step} ({reason})"),
+            })
+        }
+        ("select", HumanValue::Literal { value }) if !value.trim().is_empty() => {
+            let target = human_target_label(human)
+                .map(|target| format!(" for {target}"))
+                .unwrap_or_default();
+            Some(NotableInput {
+                value: value.clone(),
+                role: format!("selection{target} at step {step}"),
+            })
+        }
+        ("key", HumanValue::Literal { value }) if !value.trim().is_empty() => Some(NotableInput {
+            value: value.clone(),
+            role: format!("key pressed at step {step}"),
+        }),
+        _ => None,
+    }
+}
+
+fn human_target_label(human: &HumanEvent) -> Option<String> {
+    let target = human.target.as_ref()?;
+    for value in [
+        target.label.as_deref(),
+        target.name.as_deref(),
+        target.text.as_deref(),
+        target.placeholder.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !value.trim().is_empty() {
+            return Some(one_line(value, 80));
+        }
+    }
+    match &target.primary {
+        TargetLocator::Role {
+            name: Some(name), ..
+        }
+        | TargetLocator::Label { value: name }
+        | TargetLocator::Placeholder { value: name }
+        | TargetLocator::TestId { value: name } => Some(one_line(name, 80)),
+        TargetLocator::Role { name: None, role } => Some(one_line(role, 80)),
+        TargetLocator::Css { .. } | TargetLocator::XPath { .. } => None,
+    }
+}
+
 /// A verification line derived from the recording's last meaningful step.
 fn verification_hint(events: &[Event]) -> String {
     let Some(last) = events.last() else {
         return "Confirm the task completed as intended; the recording captured no steps to check."
             .to_string();
     };
+    if let Some(hint) = last
+        .human
+        .as_ref()
+        .and_then(|human| human.verification_hint.as_deref())
+    {
+        return hint.to_string();
+    }
+    if let Some(human) = last.human.as_ref() {
+        let action = human
+            .action
+            .as_str()
+            .strip_prefix("human.browser.")
+            .unwrap_or_else(|| human.action.as_str());
+        match action {
+            "navigate" => return "Confirm the expected browser page is open.".to_string(),
+            "click" | "submit" => {
+                if let Some(target) = human_target_label(human) {
+                    return format!(
+                        "Confirm the page shows the expected result after activating {target}."
+                    );
+                }
+                return "Confirm the page shows the expected result after the final browser action."
+                    .to_string();
+            }
+            "input" | "select" | "check" => {
+                return "Confirm the browser form shows the intended values before continuing."
+                    .to_string();
+            }
+            _ => {}
+        }
+    }
     match last.tool_name.as_str() {
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => last
             .tool_input
@@ -858,7 +1058,10 @@ mod tests {
         yaml_quoted,
     };
     use crate::record::Recording;
-    use crate::span::Event;
+    use crate::span::{
+        Event, EventKind, HumanAction, HumanEvent, HumanSource, HumanTarget, HumanValue,
+        TargetLocator,
+    };
 
     fn ev(seq: u64, tool: &str, input: serde_json::Value) -> Event {
         Event {
@@ -869,6 +1072,53 @@ mod tests {
             tool_response: serde_json::json!({}),
             cwd: None,
             session_id: None,
+            event_kind: crate::span::EventKind::ToolCall,
+            human: None,
+        }
+    }
+
+    fn human_browser_event(
+        seq: u64,
+        action: &str,
+        target: Option<HumanTarget>,
+        value: Option<HumanValue>,
+    ) -> Event {
+        Event {
+            ts: "2026-06-24T00:00:00Z".into(),
+            seq,
+            tool_name: action.into(),
+            tool_input: serde_json::Value::Null,
+            tool_response: serde_json::Value::Null,
+            cwd: None,
+            session_id: None,
+            event_kind: EventKind::Human,
+            human: Some(HumanEvent {
+                source: HumanSource::Browser {
+                    url: Some("https://example.test/issues/new".into()),
+                    title: Some("New issue".into()),
+                    tab_id: None,
+                },
+                action: HumanAction::from(action),
+                target,
+                value,
+                verification_hint: None,
+                frame_ref: None,
+            }),
+        }
+    }
+
+    fn label_target(label: &str, role: Option<&str>) -> HumanTarget {
+        HumanTarget {
+            primary: TargetLocator::Label {
+                value: label.to_string(),
+            },
+            alternates: Vec::new(),
+            role: role.map(str::to_string),
+            name: Some(label.to_string()),
+            text: None,
+            label: Some(label.to_string()),
+            placeholder: None,
+            element_summary: None,
         }
     }
 
@@ -925,6 +1175,113 @@ mod tests {
         assert!(
             !report.has_blocking(true),
             "default render should be strict-clean:\n{md}\n{report}"
+        );
+    }
+
+    #[test]
+    fn human_browser_render_promotes_safe_inputs_and_readable_steps() {
+        let recording = Recording {
+            rec_id: "01HUMANBROWSER".into(),
+            name: "human issue form".into(),
+            started_at: "2026-06-24T00:00:00Z".into(),
+            ended_at: "2026-06-24T00:01:00Z".into(),
+            steps: 4,
+            cwd: Some("/Users/someone/Projects/galdr".into()),
+        };
+        let events = vec![
+            human_browser_event(0, "human.browser.navigate", None, None),
+            human_browser_event(
+                1,
+                "human.browser.input",
+                Some(label_target("Issue title", Some("input"))),
+                Some(HumanValue::Redacted {
+                    kind: "text".into(),
+                    chars: Some(20),
+                }),
+            ),
+            human_browser_event(
+                2,
+                "human.browser.select",
+                Some(label_target("Priority", Some("select"))),
+                Some(HumanValue::Literal {
+                    value: "High".into(),
+                }),
+            ),
+            human_browser_event(
+                3,
+                "human.browser.click",
+                Some(label_target("Create issue", Some("button"))),
+                None,
+            ),
+        ];
+
+        let md = render_complete_skill("galdr-human-issue-form", &recording, &events);
+
+        assert!(md.contains("fills labeled fields, chooses options"), "{md}");
+        assert!(!md.contains("semantic human actions"), "{md}");
+        assert!(!md.contains("**human.browser."), "{md}");
+        assert!(
+            md.contains(
+                "- `<Issue title>` — redacted text for Issue title at step 2 (20 chars recorded)"
+            ),
+            "{md}"
+        );
+        assert!(
+            md.contains("- `High` — selection for Priority at step 3"),
+            "{md}"
+        );
+        assert!(
+            md.contains("1. **Navigate** — navigate https://example.test/issues/new"),
+            "{md}"
+        );
+        assert!(
+            md.contains("2. **Fill field** — type into input \"Issue title\" (text, 20 chars)"),
+            "{md}"
+        );
+        assert!(
+            md.contains("3. **Choose option** — select \"Priority\" = \"High\""),
+            "{md}"
+        );
+        assert!(
+            md.contains(
+                "Confirm the page shows the expected result after activating Create issue."
+            ),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn human_browser_render_never_promotes_literal_typed_text() {
+        let recording = Recording {
+            rec_id: "01HUMANLITERAL".into(),
+            name: "human literal form".into(),
+            started_at: "2026-06-24T00:00:00Z".into(),
+            ended_at: "2026-06-24T00:01:00Z".into(),
+            steps: 1,
+            cwd: Some("/Users/someone/Projects/galdr".into()),
+        };
+        let events = vec![human_browser_event(
+            0,
+            "human.browser.input",
+            Some(label_target("Issue title", Some("input"))),
+            Some(HumanValue::Literal {
+                value: "Visible customer escalation".into(),
+            }),
+        )];
+
+        let md = render_complete_skill("galdr-human-literal-form", &recording, &events);
+
+        assert!(
+            !md.contains("Visible customer escalation"),
+            "literal typed text must not survive in the skill:\n{md}"
+        );
+        assert!(
+            md.contains("- `<Issue title>` — text for Issue title at step 1 (27 chars recorded)"),
+            "{md}"
+        );
+        assert!(
+            md.contains("1. **Fill field** — type into input \"Issue title\" (text, 27 chars)"),
+            "{md}"
         );
     }
 

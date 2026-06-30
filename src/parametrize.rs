@@ -12,7 +12,7 @@ use anyhow::Result;
 use crate::diff::{self, Confidence, DiffReport, Parameter};
 use crate::ipc::Request;
 use crate::span::Event;
-use crate::summary::{slugify, summarize_input};
+use crate::summary::{slugify, summarize_event};
 use crate::{catalog, ipc, paths, record};
 
 /// Diffs two recordings and, with `emit`, installs the parametrized skill;
@@ -223,7 +223,7 @@ pub fn render_param_skill(report: &DiffReport, skill_name: &str) -> String {
 /// placeholders. Values that do not appear literally in the summary are listed as
 /// trailing notes instead.
 fn templated_step(event: &Event, params: &[&Parameter]) -> (String, Vec<String>) {
-    let mut summary = summarize_input(&event.tool_name, &event.tool_input);
+    let mut summary = summarize_event(event);
     let mut notes = Vec::new();
     for param in params {
         let placeholder = ["{{", &param.name, "}}"].concat();
@@ -262,6 +262,8 @@ mod tests {
             tool_response: serde_json::json!({}),
             cwd: None,
             session_id: None,
+            event_kind: crate::span::EventKind::ToolCall,
+            human: None,
         }
     }
 

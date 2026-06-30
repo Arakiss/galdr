@@ -33,7 +33,13 @@ Some apps only live behind a GUI, with no API or CLI. There the agent uses Compu
 the same pixel-based control, and that is the right tool for the job. galdr captures those
 sessions too: a click and a keystroke are tool calls, so it keeps the action and, by
 default, drops the screenshot (you can opt in to keeping frames to help author the skill).
-The one thing out of scope is a *human's* manual gestures in an app the agent never touched.
+
+There is now a second human-observation lane for browser workflows:
+`galdr observe browser start <name> --url <url>` launches an isolated Chrome/Chromium
+profile, injects a local CDP sensor, and records navigation, clicks, form changes, and
+submits as semantic human events. Typed text is redacted by default; screenshots are not
+captured. Native macOS human demonstrations are still the next sensor, not a shipped
+claim.
 
 ## Quickstart
 
@@ -64,6 +70,8 @@ prefix. Run `galdr` with no arguments for a one-screen overview of where you are
 
 ## What else it does
 
+- **`galdr observe browser`** — records a human-demonstrated browser workflow through a
+  local CDP sensor, with typed values redacted and no screenshots by default.
 - **`galdr suggest`** — finds repeated tasks (the same shape across recordings) worth a skill.
 - **`galdr bench`** — how reliably your skills replay, aggregated from the outcomes you record.
 - **`galdr tui`** — a terminal UI: an Overview dashboard, then tabs for recordings, skills,
@@ -106,12 +114,12 @@ each ships signed and checksummed (Sigstore + SHA-256) with an SBOM, for macOS a
 
 Shipped: the record → distill → replay loop with **author-by-default** distillation,
 **`galdr suggest`** and **`galdr bench`**, an **Overview-led TUI**, multi-harness skills and
-sensors (Claude Code, Codex, Cursor), optional **vision-assisted authoring** (keep the
-screenshots ephemerally so the authoring pass writes semantic GUI steps), and a safe,
-redacted export path.
+sensors (Claude Code, Codex, Cursor), **Human Browser Observe** for browser workflows,
+optional **vision-assisted authoring** (keep screenshots ephemerally so the authoring pass
+writes semantic GUI steps), and a safe, redacted export path.
 
-Next: a live end-to-end recording verified in each harness, capture of a *human's* GUI
-gestures (the deliberate scope gap above), and a multi-agent broker over the same model.
+Next: a live end-to-end recording verified in each harness, native macOS human observation
+behind explicit permissions, and a multi-agent broker over the same model.
 
 ## Contributing
 

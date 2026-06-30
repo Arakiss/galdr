@@ -18,6 +18,7 @@ mod harness;
 mod hook;
 mod ipc;
 mod link;
+mod observe;
 mod outcome;
 mod parametrize;
 mod paths;
@@ -56,6 +57,12 @@ enum Commands {
     Rec {
         #[command(subcommand)]
         action: RecAction,
+    },
+
+    /// Record human-observation traces.
+    Observe {
+        #[command(subcommand)]
+        action: ObserveAction,
     },
 
     /// Distill a recording into a skill.
@@ -287,6 +294,54 @@ enum RecAction {
 }
 
 #[derive(Subcommand)]
+enum ObserveAction {
+    /// Record a deterministic human-observation fixture.
+    Synthetic {
+        /// Human-readable name for the recording.
+        name: String,
+        /// Synthetic fixture to record.
+        #[arg(long, value_enum, default_value_t = observe::ObserveFixture::BrowserForm)]
+        fixture: observe::ObserveFixture,
+    },
+    /// Observe a browser workflow with a local CDP sensor and loopback collector.
+    Browser {
+        #[command(subcommand)]
+        action: BrowserObserveAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum BrowserObserveAction {
+    /// Start a browser-observation session.
+    Start {
+        /// Human-readable name for the recording.
+        name: String,
+        /// URL to open in the isolated browser profile.
+        #[arg(long)]
+        url: String,
+        /// Chrome/Chromium-compatible browser binary to launch.
+        #[arg(long, value_name = "PATH")]
+        browser: Option<PathBuf>,
+        /// Start only the local collector, without launching a browser.
+        #[arg(long, hide = true)]
+        no_open: bool,
+        /// Launch the browser in headless mode. Intended for local smoke tests.
+        #[arg(long, hide = true)]
+        headless: bool,
+    },
+    /// Stop the active browser-observation session and write the recording.
+    Stop,
+    /// Show the active browser-observation session.
+    Status,
+    /// Internal loopback collector process.
+    #[command(hide = true)]
+    Serve {
+        /// Recording id of the browser-observation session.
+        rec_id: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum DaemonAction {
     /// Show whether the daemon socket is answering.
     Status,
@@ -421,6 +476,27 @@ fn main() {
             };
             exit_on_error(result);
         }
+        Commands::Observe { action } => match action {
+            ObserveAction::Synthetic { name, fixture } => {
+                exit_on_error(observe::synthetic(name, fixture))
+            }
+            ObserveAction::Browser { action } => match action {
+                BrowserObserveAction::Start {
+                    name,
+                    url,
+                    browser,
+                    no_open,
+                    headless,
+                } => exit_on_error(observe::browser_start(
+                    name, url, browser, no_open, headless,
+                )),
+                BrowserObserveAction::Stop => exit_on_error(observe::browser_stop()),
+                BrowserObserveAction::Status => exit_on_error(observe::browser_status()),
+                BrowserObserveAction::Serve { rec_id } => {
+                    exit_on_error(observe::browser_serve(&rec_id))
+                }
+            },
+        },
         Commands::Distill {
             reference,
             from,

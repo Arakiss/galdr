@@ -1,8 +1,8 @@
 //! Recorded-event model and span JSONL I/O.
 //!
-//! The span is the raw source of truth: append-only, one JSON line per tool call,
-//! immutable once written. Nothing is deleted or rewritten; the queryable catalog
-//! (SQLite) arrives in a later phase and only indexes this.
+//! The span is the raw source of truth: append-only, one JSON line per observed
+//! event, immutable once written. Nothing is deleted or rewritten; the queryable
+//! catalog (SQLite) only indexes this.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -11,7 +11,150 @@ use std::path::Path;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// A span event: one tool call observed by the sensor.
+/// The high-level kind of observed event.
+///
+/// The default is deliberately `ToolCall`, so every span written before human
+/// observation existed still deserializes without a migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    /// A normal harness tool call captured by `galdr hook`.
+    #[default]
+    ToolCall,
+    /// A human action captured by an observe sensor.
+    Human,
+}
+
+impl EventKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ToolCall => "tool_call",
+            Self::Human => "human",
+        }
+    }
+
+    pub fn is_tool_call(&self) -> bool {
+        *self == Self::ToolCall
+    }
+}
+
+/// A typed human-observation payload.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HumanEvent {
+    pub source: HumanSource,
+    /// Canonical action name, e.g. `human.browser.click`.
+    pub action: HumanAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<HumanTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<HumanValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_ref: Option<String>,
+}
+
+/// A typed wrapper around the canonical human action string.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct HumanAction(pub String);
+
+impl HumanAction {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for HumanAction {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+/// Where a human-observation event came from.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HumanSource {
+    Browser {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tab_id: Option<String>,
+    },
+    MacApp {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_title: Option<String>,
+    },
+}
+
+/// The semantic target of a human action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HumanTarget {
+    pub primary: TargetLocator,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternates: Vec<TargetLocator>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element_summary: Option<String>,
+}
+
+/// Locator candidates for replay-authoring. Coordinates are debug metadata only.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TargetLocator {
+    Role {
+        role: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    Label {
+        value: String,
+    },
+    Placeholder {
+        value: String,
+    },
+    TestId {
+        value: String,
+    },
+    Css {
+        value: String,
+    },
+    XPath {
+        value: String,
+    },
+}
+
+/// Value policy for a human input.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "policy", rename_all = "snake_case")]
+pub enum HumanValue {
+    Omitted {
+        reason: String,
+    },
+    Redacted {
+        kind: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chars: Option<usize>,
+    },
+    Literal {
+        value: String,
+    },
+}
+
+/// A span event: one tool call or human action observed by a sensor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     /// RFC3339 (UTC) timestamp of when it was recorded.
@@ -32,6 +175,12 @@ pub struct Event {
     /// The agent session identifier.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Event kind. Omitted for historical and normal tool-call events.
+    #[serde(default, skip_serializing_if = "EventKind::is_tool_call")]
+    pub event_kind: EventKind,
+    /// Typed payload for human-observation events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human: Option<HumanEvent>,
 }
 
 /// Appends an event to the span. Creates the file if missing; never truncates.
@@ -95,6 +244,8 @@ mod tests {
             tool_response: serde_json::json!({ "exit_code": 0 }),
             cwd: Some("/tmp".into()),
             session_id: Some("s1".into()),
+            event_kind: EventKind::ToolCall,
+            human: None,
         }
     }
 
@@ -128,5 +279,64 @@ mod tests {
         // count_events counts raw non-empty lines; read_span skips the corrupt one.
         assert_eq!(count_events(&path), 2);
         assert_eq!(read_span(&path).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn old_tool_call_json_defaults_event_kind() {
+        let event: Event = serde_json::from_str(
+            r#"{"ts":"2026-06-19T00:00:00Z","seq":0,"tool_name":"Bash","tool_input":{"command":"git status"}}"#,
+        )
+        .unwrap();
+        assert_eq!(event.event_kind, EventKind::ToolCall);
+        assert!(event.human.is_none());
+    }
+
+    #[test]
+    fn human_event_roundtrips() {
+        let event = Event {
+            ts: "2026-06-19T00:00:00Z".into(),
+            seq: 0,
+            tool_name: "human.browser.click".into(),
+            tool_input: serde_json::Value::Null,
+            tool_response: serde_json::Value::Null,
+            cwd: None,
+            session_id: None,
+            event_kind: EventKind::Human,
+            human: Some(HumanEvent {
+                source: HumanSource::Browser {
+                    url: Some("https://example.test".into()),
+                    title: Some("Example".into()),
+                    tab_id: None,
+                },
+                action: HumanAction::from("human.browser.click"),
+                target: Some(HumanTarget {
+                    primary: TargetLocator::Role {
+                        role: "button".into(),
+                        name: Some("Create issue".into()),
+                    },
+                    alternates: vec![TargetLocator::Css {
+                        value: "button#create".into(),
+                    }],
+                    role: Some("button".into()),
+                    name: Some("Create issue".into()),
+                    text: None,
+                    label: None,
+                    placeholder: None,
+                    element_summary: None,
+                }),
+                value: None,
+                verification_hint: Some("Confirm the issue was created.".into()),
+                frame_ref: None,
+            }),
+        };
+
+        let encoded = serde_json::to_string(&event).unwrap();
+        assert!(encoded.contains(r#""event_kind":"human""#));
+        let decoded: Event = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.event_kind, EventKind::Human);
+        assert_eq!(
+            decoded.human.unwrap().action.as_str(),
+            "human.browser.click"
+        );
     }
 }

@@ -4,7 +4,8 @@
 //! isolated and the tests are hermetic and parallel-safe. The binary path comes
 //! from `CARGO_BIN_EXE_galdr`, which cargo sets for integration tests.
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -133,6 +134,79 @@ fn stderr(output: &Output) -> String {
 
 const BASH_STATUS: &str =
     r#"{"tool_name":"Bash","tool_input":{"command":"git status"},"tool_response":{}}"#;
+
+fn write_human_recording(sb: &Sandbox, rec_id: &str, name: &str, value: serde_json::Value) {
+    let root = sb.home().join(".galdr");
+    std::fs::create_dir_all(root.join("spans")).unwrap();
+    std::fs::create_dir_all(root.join("recordings")).unwrap();
+    let event = serde_json::json!({
+        "ts": "2026-06-30T00:00:00Z",
+        "seq": 0,
+        "tool_name": "human.browser.input",
+        "tool_input": {},
+        "tool_response": {},
+        "event_kind": "human",
+        "human": {
+            "source": {
+                "kind": "browser",
+                "url": "https://example.test/issues/new",
+                "title": "New issue"
+            },
+            "action": "human.browser.input",
+            "target": {
+                "primary": {
+                    "kind": "label",
+                    "value": "Issue title"
+                },
+                "label": "Issue title"
+            },
+            "value": value,
+            "verification_hint": "Confirm the issue was saved."
+        }
+    });
+    std::fs::write(
+        root.join("spans").join(format!("{rec_id}.jsonl")),
+        format!("{}\n", serde_json::to_string(&event).unwrap()),
+    )
+    .unwrap();
+    let recording = serde_json::json!({
+        "rec_id": rec_id,
+        "name": name,
+        "started_at": "2026-06-30T00:00:00Z",
+        "ended_at": "2026-06-30T00:01:00Z",
+        "steps": 1,
+        "cwd": null
+    });
+    std::fs::write(
+        root.join("recordings").join(format!("{rec_id}.json")),
+        serde_json::to_string_pretty(&recording).unwrap(),
+    )
+    .unwrap();
+}
+
+fn active_browser_port(sb: &Sandbox) -> u16 {
+    let raw =
+        std::fs::read_to_string(sb.home().join(".galdr/observe/browser-active.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    value["port"].as_u64().unwrap() as u16
+}
+
+fn post_browser_event(port: u16, event: serde_json::Value) {
+    let body = serde_json::to_string(&event).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let request = format!(
+        "POST /event HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream.write_all(request.as_bytes()).unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 204"),
+        "unexpected response: {response}"
+    );
+}
 
 #[test]
 fn json_output_is_machine_readable() {
@@ -786,6 +860,219 @@ fn reindex_rebuilds_the_catalog_from_disk() {
     let list = sb.run(&["list"]);
     assert!(list.status.success());
     assert!(stdout(&list).contains("demo"));
+}
+
+#[test]
+fn human_events_reindex_show_distill_and_export() {
+    let sb = Sandbox::new();
+    write_human_recording(
+        &sb,
+        "01HUMAN",
+        "human issue form",
+        serde_json::json!({
+            "policy": "redacted",
+            "kind": "text",
+            "chars": 24
+        }),
+    );
+
+    let reindex = sb.run(&["reindex"]);
+    assert!(reindex.status.success(), "{}", stderr(&reindex));
+
+    let show = sb.run(&["show", "01HUMAN", "--json"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(detail["steps"][0]["event_kind"], "human");
+    assert_eq!(
+        detail["steps"][0]["summary"],
+        "type into \"Issue title\" (text, 24 chars)"
+    );
+
+    let distill = sb.run(&["distill", "01HUMAN", "--fast"]);
+    assert!(distill.status.success(), "{}", stderr(&distill));
+    let skill = sb.skill_md("galdr-human-issue-form");
+    assert!(skill.contains("browser workflow"), "{skill}");
+    assert!(skill.contains("type into \"Issue title\""), "{skill}");
+    assert!(skill.contains("Confirm the issue was saved."), "{skill}");
+
+    write_human_recording(
+        &sb,
+        "01HUMANLIT",
+        "human literal",
+        serde_json::json!({
+            "policy": "literal",
+            "value": "Visible customer escalation"
+        }),
+    );
+    let literal_distill = sb.run(&["distill", "01HUMANLIT", "--fast"]);
+    assert!(
+        literal_distill.status.success(),
+        "{}",
+        stderr(&literal_distill)
+    );
+    let literal_skill = sb.skill_md("galdr-human-literal");
+    assert!(
+        !literal_skill.contains("Visible customer escalation"),
+        "literal typed text leaked into skill:\n{literal_skill}"
+    );
+    assert!(
+        literal_skill
+            .contains("- `<Issue title>` — text for Issue title at step 1 (27 chars recorded)"),
+        "{literal_skill}"
+    );
+
+    let out = sb.home().join("human-export");
+    let export = sb
+        .cmd()
+        .args(["export", "01HUMANLIT", "--out"])
+        .arg(&out)
+        .arg("--redact")
+        .output()
+        .unwrap();
+    assert!(export.status.success(), "{}", stderr(&export));
+    let raw = std::fs::read_to_string(out.join("raw.redacted.jsonl")).unwrap();
+    assert!(!raw.contains("Visible customer escalation"), "{raw}");
+    assert!(raw.contains(r#""policy":"redacted""#), "{raw}");
+    assert!(raw.contains(r#""kind":"literal""#), "{raw}");
+}
+
+#[test]
+fn observe_synthetic_records_a_human_trace() {
+    let sb = Sandbox::new();
+    let observed = sb.run(&[
+        "observe",
+        "synthetic",
+        "synthetic human form",
+        "--fixture",
+        "browser-form",
+    ]);
+    assert!(observed.status.success(), "{}", stderr(&observed));
+    let said = stdout(&observed);
+    assert!(said.contains("observed \"synthetic human form\""), "{said}");
+
+    let list = stdout(&sb.run(&["list"]));
+    assert!(list.contains("synthetic human form"), "{list}");
+    assert!(list.contains("4 steps"), "{list}");
+
+    let show = sb.run(&["show", "synthetic human form", "--json"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(detail["recording"]["name"], "synthetic human form");
+    assert_eq!(detail["steps"].as_array().unwrap().len(), 4);
+    assert!(
+        detail["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|step| step["event_kind"] == "human")
+    );
+    assert_eq!(
+        detail["steps"][0]["summary"],
+        "navigate https://example.test/issues/new"
+    );
+    assert_eq!(
+        detail["steps"][1]["summary"],
+        "type into \"Issue title\" (text, 24 chars)"
+    );
+    assert_eq!(
+        detail["steps"][2]["summary"],
+        "select \"Priority\" = \"High\""
+    );
+    assert_eq!(
+        detail["steps"][3]["summary"],
+        "click button \"Create issue\""
+    );
+
+    let distill = sb.run(&["distill", "synthetic human form", "--fast"]);
+    assert!(distill.status.success(), "{}", stderr(&distill));
+    let skill = sb.skill_md("galdr-synthetic-human-form");
+    assert!(skill.contains("browser workflow"), "{skill}");
+    assert!(
+        skill.contains("navigate https://example.test/issues/new"),
+        "{skill}"
+    );
+    assert!(skill.contains("select \"Priority\" = \"High\""), "{skill}");
+    assert!(
+        skill.contains("Confirm the created issue page is open or a success message appears."),
+        "{skill}"
+    );
+}
+
+#[test]
+fn observe_browser_collector_records_loopback_events() {
+    let sb = Sandbox::new();
+    let start = sb.run(&[
+        "observe",
+        "browser",
+        "start",
+        "browser collector",
+        "--url",
+        "https://example.test/form",
+        "--no-open",
+    ]);
+    assert!(start.status.success(), "{}", stderr(&start));
+    let port = active_browser_port(&sb);
+
+    post_browser_event(
+        port,
+        serde_json::json!({
+            "ts": "2026-06-30T00:00:00Z",
+            "action": "human.browser.navigate",
+            "source": {
+                "kind": "browser",
+                "url": "https://example.test/form",
+                "title": "Demo form"
+            }
+        }),
+    );
+    post_browser_event(
+        port,
+        serde_json::json!({
+            "ts": "2026-06-30T00:00:01Z",
+            "action": "human.browser.input",
+            "source": {
+                "kind": "browser",
+                "url": "https://example.test/form",
+                "title": "Demo form"
+            },
+            "target": {
+                "primary": {
+                    "kind": "label",
+                    "value": "Email"
+                },
+                "label": "Email"
+            },
+            "value": {
+                "policy": "redacted",
+                "kind": "text",
+                "chars": 16
+            }
+        }),
+    );
+
+    let status = stdout(&sb.run(&["observe", "browser", "status"]));
+    assert!(status.contains("events: 2"), "{status}");
+    assert!(status.contains("server: up"), "{status}");
+
+    let stop = sb.run(&["observe", "browser", "stop"]);
+    assert!(stop.status.success(), "{}", stderr(&stop));
+    let said = stdout(&stop);
+    assert!(said.contains("stopped browser observation"), "{said}");
+    assert!(said.contains("2 human steps"), "{said}");
+
+    let show = sb.run(&["show", "browser collector", "--json"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(detail["steps"].as_array().unwrap().len(), 2);
+    assert_eq!(detail["steps"][0]["event_kind"], "human");
+    assert_eq!(
+        detail["steps"][0]["summary"],
+        "navigate https://example.test/form"
+    );
+    assert_eq!(
+        detail["steps"][1]["summary"],
+        "type into \"Email\" (text, 16 chars)"
+    );
 }
 
 #[test]
