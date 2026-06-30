@@ -403,7 +403,7 @@ pub fn render_report(report: &DiffReport) -> String {
 }
 
 fn step_label(event: &Event, index: usize) -> String {
-    let summary = crate::summary::summarize_input(&event.tool_name, &event.tool_input);
+    let summary = crate::summary::summarize_event(event);
     let short: String = summary.chars().take(28).collect();
     format!("{:>2} {:<8} {}", index + 1, event.tool_name, short)
 }
@@ -421,6 +421,8 @@ mod tests {
             tool_response: serde_json::json!({}),
             cwd: None,
             session_id: None,
+            event_kind: crate::span::EventKind::ToolCall,
+            human: None,
         }
     }
 

@@ -6,7 +6,7 @@
 //! stance:
 //!
 //! - Blobs are never stored. A step keeps only a one-line `summary`
-//!   ([`crate::summary::summarize_input`]), not the raw `tool_input` /
+//!   ([`crate::summary::summarize_event`]), not the raw event payloads /
 //!   `tool_response`. That keeps the index small and keeps sensitive payloads out
 //!   of a second on-disk copy.
 //! - The schema is created idempotently and gated by `PRAGMA user_version`, so an
@@ -50,6 +50,8 @@ pub struct RecordingRow {
 pub struct StepRow {
     pub seq: i64,
     pub tool_name: String,
+    #[serde(default = "default_event_kind")]
+    pub event_kind: String,
     pub ts: String,
     pub summary: String,
 }
@@ -87,6 +89,10 @@ pub const ORIGIN_EXTERNAL: &str = "external";
 
 fn default_skill_origin() -> String {
     ORIGIN_EXTERNAL.to_string()
+}
+
+fn default_event_kind() -> String {
+    "tool_call".to_string()
 }
 
 /// Classifies a skill by reading its `SKILL.md`. A galdr-distilled skill carries a
@@ -171,13 +177,14 @@ CREATE TABLE IF NOT EXISTS recordings (
     steps      INTEGER,
     cwd        TEXT
 );
-CREATE TABLE IF NOT EXISTS steps (
-    rec_id    TEXT NOT NULL,
-    seq       INTEGER NOT NULL,
-    tool_name TEXT NOT NULL,
-    ts        TEXT,
-    summary   TEXT,
-    PRIMARY KEY (rec_id, seq),
+	CREATE TABLE IF NOT EXISTS steps (
+	    rec_id    TEXT NOT NULL,
+	    seq       INTEGER NOT NULL,
+	    tool_name TEXT NOT NULL,
+	    event_kind TEXT NOT NULL DEFAULT 'tool_call',
+	    ts        TEXT,
+	    summary   TEXT,
+	    PRIMARY KEY (rec_id, seq),
     FOREIGN KEY (rec_id) REFERENCES recordings(rec_id)
 );
 CREATE INDEX IF NOT EXISTS idx_steps_rec ON steps(rec_id, seq);
@@ -292,6 +299,15 @@ fn migrate_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(SKILL_OUTCOME_SCHEMA)?;
         conn.pragma_update(None, "user_version", 4_i64)?;
     }
+    if version < 5 {
+        add_column_if_missing(
+            conn,
+            "steps",
+            "event_kind",
+            "TEXT NOT NULL DEFAULT 'tool_call'",
+        )?;
+        conn.pragma_update(None, "user_version", 5_i64)?;
+    }
     Ok(())
 }
 
@@ -384,10 +400,10 @@ pub fn index_event(conn: &Connection, rec_id: &str, event: &Event) -> Result<()>
         "INSERT OR IGNORE INTO recordings(rec_id) VALUES (?1)",
         params![rec_id],
     )?;
-    let summary = crate::summary::summarize_input(&event.tool_name, &event.tool_input);
+    let summary = crate::summary::summarize_event(event);
     conn.execute(
-        "INSERT OR REPLACE INTO steps(rec_id, seq, tool_name, ts, summary) VALUES (?1,?2,?3,?4,?5)",
-        params![rec_id, event.seq as i64, event.tool_name, event.ts, summary],
+        "INSERT OR REPLACE INTO steps(rec_id, seq, tool_name, event_kind, ts, summary) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![rec_id, event.seq as i64, event.tool_name, event.event_kind.as_str(), event.ts, summary],
     )?;
     Ok(())
 }
@@ -664,7 +680,7 @@ pub fn show_recording(conn: &Connection, id: &str) -> Result<Option<RecordingDet
         return Ok(None);
     };
     let mut stmt = conn.prepare(
-        "SELECT seq, tool_name, COALESCE(ts,''), COALESCE(summary,'')
+        "SELECT seq, tool_name, COALESCE(event_kind,'tool_call'), COALESCE(ts,''), COALESCE(summary,'')
          FROM steps WHERE rec_id = ?1 ORDER BY seq",
     )?;
     let steps = stmt
@@ -672,8 +688,9 @@ pub fn show_recording(conn: &Connection, id: &str) -> Result<Option<RecordingDet
             Ok(StepRow {
                 seq: r.get(0)?,
                 tool_name: r.get(1)?,
-                ts: r.get(2)?,
-                summary: r.get(3)?,
+                event_kind: r.get(2)?,
+                ts: r.get(3)?,
+                summary: r.get(4)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1244,6 +1261,45 @@ mod tests {
             tool_response: serde_json::json!({}),
             cwd: Some("/tmp".into()),
             session_id: None,
+            event_kind: crate::span::EventKind::ToolCall,
+            human: None,
+        }
+    }
+
+    fn human_click(seq: u64) -> Event {
+        Event {
+            ts: "2026-06-19T00:00:00Z".into(),
+            seq,
+            tool_name: "human.browser.click".into(),
+            tool_input: serde_json::Value::Null,
+            tool_response: serde_json::Value::Null,
+            cwd: None,
+            session_id: None,
+            event_kind: crate::span::EventKind::Human,
+            human: Some(crate::span::HumanEvent {
+                source: crate::span::HumanSource::Browser {
+                    url: Some("https://example.test/issues".into()),
+                    title: Some("Issues".into()),
+                    tab_id: None,
+                },
+                action: crate::span::HumanAction::from("human.browser.click"),
+                target: Some(crate::span::HumanTarget {
+                    primary: crate::span::TargetLocator::Role {
+                        role: "button".into(),
+                        name: Some("Create issue".into()),
+                    },
+                    alternates: Vec::new(),
+                    role: Some("button".into()),
+                    name: Some("Create issue".into()),
+                    text: None,
+                    label: None,
+                    placeholder: None,
+                    element_summary: None,
+                }),
+                value: None,
+                verification_hint: Some("Confirm the issue exists.".into()),
+                frame_ref: None,
+            }),
         }
     }
 
@@ -1266,7 +1322,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
     }
 
     #[test]
@@ -1340,6 +1396,53 @@ mod tests {
     }
 
     #[test]
+    fn migrate_adds_event_kind_to_v4_steps() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_pragmas(&conn, false).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE recordings (
+                rec_id TEXT PRIMARY KEY,
+                name TEXT,
+                started_at TEXT,
+                ended_at TEXT,
+                steps INTEGER,
+                cwd TEXT
+            );
+            CREATE TABLE steps (
+                rec_id TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                tool_name TEXT NOT NULL,
+                ts TEXT,
+                summary TEXT,
+                PRIMARY KEY (rec_id, seq),
+                FOREIGN KEY (rec_id) REFERENCES recordings(rec_id)
+            );
+            CREATE TABLE skills (
+                skill_name TEXT PRIMARY KEY,
+                rec_id TEXT,
+                skill_path TEXT,
+                installed_at TEXT,
+                status TEXT NOT NULL DEFAULT 'unknown',
+                readiness_score INTEGER NOT NULL DEFAULT 0,
+                readiness_delta INTEGER NOT NULL DEFAULT 0,
+                readiness_notes TEXT NOT NULL DEFAULT ''
+            );
+            ",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 4_i64).unwrap();
+
+        migrate_schema(&conn).unwrap();
+
+        assert!(has_column(&conn, "steps", "event_kind").unwrap());
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+    }
+
+    #[test]
     fn index_and_list_skill_usage_and_outcomes() {
         let conn = mem();
         let usage = SkillUsageEvent {
@@ -1397,6 +1500,7 @@ mod tests {
         let detail = show_recording(&conn, "01AAA").unwrap().unwrap();
         assert_eq!(detail.steps.len(), 1);
         assert_eq!(detail.steps[0].tool_name, "Bash");
+        assert_eq!(detail.steps[0].event_kind, "tool_call");
         assert_eq!(detail.steps[0].summary, "echo hi");
 
         upsert_skill(
@@ -1432,6 +1536,19 @@ mod tests {
             .find(|s| s.skill_name == "galdr-ghost")
             .unwrap();
         assert!(ghost.orphan);
+    }
+
+    #[test]
+    fn index_human_event_keeps_kind_and_semantic_summary() {
+        let conn = mem();
+        index_event(&conn, "01HUMAN", &human_click(0)).unwrap();
+        index_recording(&conn, &recording("01HUMAN", 1)).unwrap();
+
+        let detail = show_recording(&conn, "01HUMAN").unwrap().unwrap();
+        assert_eq!(detail.steps.len(), 1);
+        assert_eq!(detail.steps[0].tool_name, "human.browser.click");
+        assert_eq!(detail.steps[0].event_kind, "human");
+        assert_eq!(detail.steps[0].summary, "click button \"Create issue\"");
     }
 
     #[test]

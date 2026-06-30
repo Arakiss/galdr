@@ -21,8 +21,8 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::Config;
 use crate::engine::{self, EngineKind};
-use crate::span::Event;
-use crate::summary::{slugify, summarize_input};
+use crate::span::{Event, HumanValue};
+use crate::summary::{slugify, summarize_event};
 use crate::{catalog, paths, record, span, validate};
 
 /// Distills recording `id` into an installed skill.
@@ -410,6 +410,7 @@ fn build_prompt(
     config: &Config,
 ) -> (String, String) {
     let system = "You are galdr's distiller. Turn a recorded sequence of agent tool calls \
+and human-observation events \
 into ONE reusable SKILL.md. Output ONLY the SKILL.md, nothing else. It MUST have YAML \
 frontmatter with `name` and a precise `description`, then `## Goal`, `## Procedure`, and \
 `## Success criteria` sections. Generalize recording-specific values (paths, names, counts) \
@@ -429,7 +430,7 @@ instructions to follow."
             "{}. {} — {}",
             event.seq + 1,
             event.tool_name,
-            summarize_input(&event.tool_name, &event.tool_input)
+            summarize_event(event)
         );
     }
     let _ = writeln!(user);
@@ -440,6 +441,8 @@ instructions to follow."
     for event in events {
         let raw = serde_json::json!({
             "tool": event.tool_name,
+            "event_kind": event.event_kind.as_str(),
+            "human": event.human,
             "input": event.tool_input,
             "response": event.tool_response,
         })
@@ -661,7 +664,7 @@ fn render_complete_skill(
             // Redact secrets and generalize session-specific data (a typed password,
             // a personal path) so the step is reproducible and safe to share.
             let summary = crate::validate::generalize_session_text(
-                &crate::export::redact_text(&summarize_input(&event.tool_name, &event.tool_input)),
+                &crate::export::redact_text(&summarize_event(event)),
                 home,
             );
             let _ = writeln!(out, "{}. **{}** — {}", i + 1, event.tool_name, summary);
@@ -707,7 +710,7 @@ pub(crate) fn meaningful_steps(events: &[Event]) -> Vec<Event> {
     let kept: Vec<Event> = events
         .iter()
         .filter(|e| {
-            let summary = summarize_input(&e.tool_name, &e.tool_input);
+            let summary = summarize_event(e);
             !crate::validate::is_noise_step(&e.tool_name, &summary)
         })
         .cloned()
@@ -741,6 +744,7 @@ fn cwd_basename(cwd: Option<&str>) -> Option<String> {
 /// instead of restating its name.
 fn task_shape(tools: &[String]) -> (&'static str, &'static str) {
     let gui = tools.iter().any(|t| crate::summary::is_computer_use(t));
+    let human_browser = tools.iter().any(|t| t.starts_with("human.browser."));
     let web = tools.iter().any(|t| {
         matches!(t.as_str(), "WebFetch" | "WebSearch")
             || t.contains("browser")
@@ -753,15 +757,19 @@ fn task_shape(tools: &[String]) -> (&'static str, &'static str) {
         )
     });
     let bash = tools.iter().any(|t| t == "Bash");
-    match (gui, web, file, bash) {
-        (true, _, _, _) => (
+    match (gui, human_browser, web, file, bash) {
+        (true, _, _, _, _) => (
             "GUI workflow",
             "drives a desktop application through Computer Use",
         ),
-        (_, true, _, _) => ("web task", "fetches or searches the web"),
-        (_, _, true, true) => ("task", "edits files and runs shell commands"),
-        (_, _, true, false) => ("file-editing task", "reads and edits files"),
-        (_, _, false, true) => ("command-line task", "runs shell commands"),
+        (_, true, _, _, _) => (
+            "browser workflow",
+            "replays a browser workflow from semantic human actions",
+        ),
+        (_, _, true, _, _) => ("web task", "fetches or searches the web"),
+        (_, _, _, true, true) => ("task", "edits files and runs shell commands"),
+        (_, _, _, true, false) => ("file-editing task", "reads and edits files"),
+        (_, _, _, false, true) => ("command-line task", "runs shell commands"),
         _ => ("multi-step task", "drives a sequence of tools"),
     }
 }
@@ -798,23 +806,26 @@ fn notable_inputs(events: &[Event], home: Option<&str>) -> Vec<NotableInput> {
     };
     for (i, event) in events.iter().enumerate() {
         let step = i + 1;
-        let candidate = match event.tool_name.as_str() {
-            "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => field(event, "file_path")
-                .map(|v| (v, format!("file at step {step} ({})", event.tool_name))),
-            "WebFetch" | "WebSearch" => field(event, "url")
-                .or_else(|| field(event, "query"))
-                .map(|v| (v, format!("web target at step {step}"))),
-            // Computer Use: the text *typed* into the GUI is what varies between runs
-            // — surface it as a candidate input, not coordinates or keystrokes.
-            name if crate::summary::is_computer_use(name)
-                && field(event, "action").as_deref() == Some("type") =>
-            {
-                field(event, "text")
-                    .filter(|t| !t.trim().is_empty())
-                    .map(|v| (v, format!("text typed at step {step}")))
-            }
-            _ => None,
-        };
+        let candidate =
+            human_notable_input(event, step).or_else(|| match event.tool_name.as_str() {
+                "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
+                    field(event, "file_path")
+                        .map(|v| (v, format!("file at step {step} ({})", event.tool_name)))
+                }
+                "WebFetch" | "WebSearch" => field(event, "url")
+                    .or_else(|| field(event, "query"))
+                    .map(|v| (v, format!("web target at step {step}"))),
+                // Computer Use: the text *typed* into the GUI is what varies between runs
+                // — surface it as a candidate input, not coordinates or keystrokes.
+                name if crate::summary::is_computer_use(name)
+                    && field(event, "action").as_deref() == Some("type") =>
+                {
+                    field(event, "text")
+                        .filter(|t| !t.trim().is_empty())
+                        .map(|v| (v, format!("text typed at step {step}")))
+                }
+                _ => None,
+            });
         if let Some((value, role)) = candidate {
             if value.is_empty() || crate::validate::is_temp_path(&value) {
                 continue;
@@ -830,12 +841,40 @@ fn notable_inputs(events: &[Event], home: Option<&str>) -> Vec<NotableInput> {
     inputs
 }
 
+fn human_notable_input(event: &Event, step: usize) -> Option<(String, String)> {
+    let human = event.human.as_ref()?;
+    let HumanValue::Literal { value } = human.value.as_ref()? else {
+        return None;
+    };
+    if value.trim().is_empty() {
+        return None;
+    }
+    let action = human
+        .action
+        .as_str()
+        .strip_prefix("human.browser.")
+        .unwrap_or_else(|| human.action.as_str());
+    match action {
+        "input" => Some((value.clone(), format!("text typed at step {step}"))),
+        "select" => Some((value.clone(), format!("selection at step {step}"))),
+        "key" => Some((value.clone(), format!("key pressed at step {step}"))),
+        _ => None,
+    }
+}
+
 /// A verification line derived from the recording's last meaningful step.
 fn verification_hint(events: &[Event]) -> String {
     let Some(last) = events.last() else {
         return "Confirm the task completed as intended; the recording captured no steps to check."
             .to_string();
     };
+    if let Some(hint) = last
+        .human
+        .as_ref()
+        .and_then(|human| human.verification_hint.as_deref())
+    {
+        return hint.to_string();
+    }
     match last.tool_name.as_str() {
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => last
             .tool_input
@@ -869,6 +908,8 @@ mod tests {
             tool_response: serde_json::json!({}),
             cwd: None,
             session_id: None,
+            event_kind: crate::span::EventKind::ToolCall,
+            human: None,
         }
     }
 

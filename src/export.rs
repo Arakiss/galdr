@@ -75,6 +75,9 @@ pub fn export_recording(id: &str, out: &Path, include_raw: bool, redact: bool) -
             if redact {
                 redact_value(&mut event.tool_input);
                 redact_value(&mut event.tool_response);
+                if let Some(human) = &mut event.human {
+                    redact_human_event(human);
+                }
             }
             writeln!(file, "{}", serde_json::to_string(&event)?)?;
         }
@@ -129,6 +132,87 @@ fn redact_value(value: &mut serde_json::Value) {
         }
         _ => {}
     }
+}
+
+fn redact_human_event(human: &mut span::HumanEvent) {
+    redact_human_source(&mut human.source);
+    if let Some(target) = &mut human.target {
+        redact_human_target(target);
+    }
+    if let Some(value) = &mut human.value {
+        redact_human_value(value);
+    }
+    if let Some(hint) = &mut human.verification_hint {
+        redact_string(hint);
+    }
+    if let Some(frame_ref) = &mut human.frame_ref {
+        redact_string(frame_ref);
+    }
+}
+
+fn redact_human_source(source: &mut span::HumanSource) {
+    match source {
+        span::HumanSource::Browser { url, title, tab_id } => {
+            redact_optional_string(url);
+            redact_optional_string(title);
+            redact_optional_string(tab_id);
+        }
+        span::HumanSource::MacApp { app, window_title } => {
+            redact_optional_string(app);
+            redact_optional_string(window_title);
+        }
+    }
+}
+
+fn redact_human_target(target: &mut span::HumanTarget) {
+    redact_locator(&mut target.primary);
+    for locator in &mut target.alternates {
+        redact_locator(locator);
+    }
+    redact_optional_string(&mut target.role);
+    redact_optional_string(&mut target.name);
+    redact_optional_string(&mut target.text);
+    redact_optional_string(&mut target.label);
+    redact_optional_string(&mut target.placeholder);
+    redact_optional_string(&mut target.element_summary);
+}
+
+fn redact_locator(locator: &mut span::TargetLocator) {
+    match locator {
+        span::TargetLocator::Role { role, name } => {
+            redact_string(role);
+            redact_optional_string(name);
+        }
+        span::TargetLocator::Label { value }
+        | span::TargetLocator::Placeholder { value }
+        | span::TargetLocator::TestId { value }
+        | span::TargetLocator::Css { value }
+        | span::TargetLocator::XPath { value } => redact_string(value),
+    }
+}
+
+fn redact_human_value(value: &mut span::HumanValue) {
+    match value {
+        span::HumanValue::Literal { value: literal } => {
+            let chars = literal.chars().count();
+            *value = span::HumanValue::Redacted {
+                kind: "literal".to_string(),
+                chars: Some(chars),
+            };
+        }
+        span::HumanValue::Omitted { reason } => redact_string(reason),
+        span::HumanValue::Redacted { kind, .. } => redact_string(kind),
+    }
+}
+
+fn redact_optional_string(value: &mut Option<String>) {
+    if let Some(value) = value {
+        redact_string(value);
+    }
+}
+
+fn redact_string(value: &mut String) {
+    *value = redact_text(value);
 }
 
 fn is_sensitive_key(key: &str) -> bool {

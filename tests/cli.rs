@@ -134,6 +134,55 @@ fn stderr(output: &Output) -> String {
 const BASH_STATUS: &str =
     r#"{"tool_name":"Bash","tool_input":{"command":"git status"},"tool_response":{}}"#;
 
+fn write_human_recording(sb: &Sandbox, rec_id: &str, name: &str, value: serde_json::Value) {
+    let root = sb.home().join(".galdr");
+    std::fs::create_dir_all(root.join("spans")).unwrap();
+    std::fs::create_dir_all(root.join("recordings")).unwrap();
+    let event = serde_json::json!({
+        "ts": "2026-06-30T00:00:00Z",
+        "seq": 0,
+        "tool_name": "human.browser.input",
+        "tool_input": {},
+        "tool_response": {},
+        "event_kind": "human",
+        "human": {
+            "source": {
+                "kind": "browser",
+                "url": "https://example.test/issues/new",
+                "title": "New issue"
+            },
+            "action": "human.browser.input",
+            "target": {
+                "primary": {
+                    "kind": "label",
+                    "value": "Issue title"
+                },
+                "label": "Issue title"
+            },
+            "value": value,
+            "verification_hint": "Confirm the issue was saved."
+        }
+    });
+    std::fs::write(
+        root.join("spans").join(format!("{rec_id}.jsonl")),
+        format!("{}\n", serde_json::to_string(&event).unwrap()),
+    )
+    .unwrap();
+    let recording = serde_json::json!({
+        "rec_id": rec_id,
+        "name": name,
+        "started_at": "2026-06-30T00:00:00Z",
+        "ended_at": "2026-06-30T00:01:00Z",
+        "steps": 1,
+        "cwd": null
+    });
+    std::fs::write(
+        root.join("recordings").join(format!("{rec_id}.json")),
+        serde_json::to_string_pretty(&recording).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
 fn json_output_is_machine_readable() {
     // The CLI is the AI-first surface: every --json flag must emit a single,
@@ -786,6 +835,63 @@ fn reindex_rebuilds_the_catalog_from_disk() {
     let list = sb.run(&["list"]);
     assert!(list.status.success());
     assert!(stdout(&list).contains("demo"));
+}
+
+#[test]
+fn human_events_reindex_show_distill_and_export() {
+    let sb = Sandbox::new();
+    write_human_recording(
+        &sb,
+        "01HUMAN",
+        "human issue form",
+        serde_json::json!({
+            "policy": "redacted",
+            "kind": "text",
+            "chars": 24
+        }),
+    );
+
+    let reindex = sb.run(&["reindex"]);
+    assert!(reindex.status.success(), "{}", stderr(&reindex));
+
+    let show = sb.run(&["show", "01HUMAN", "--json"]);
+    assert!(show.status.success(), "{}", stderr(&show));
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&show)).unwrap();
+    assert_eq!(detail["steps"][0]["event_kind"], "human");
+    assert_eq!(
+        detail["steps"][0]["summary"],
+        "type into \"Issue title\" (text, 24 chars)"
+    );
+
+    let distill = sb.run(&["distill", "01HUMAN", "--fast"]);
+    assert!(distill.status.success(), "{}", stderr(&distill));
+    let skill = sb.skill_md("galdr-human-issue-form");
+    assert!(skill.contains("browser workflow"), "{skill}");
+    assert!(skill.contains("type into \"Issue title\""), "{skill}");
+    assert!(skill.contains("Confirm the issue was saved."), "{skill}");
+
+    write_human_recording(
+        &sb,
+        "01HUMANLIT",
+        "human literal",
+        serde_json::json!({
+            "policy": "literal",
+            "value": "petru@example.test"
+        }),
+    );
+    let out = sb.home().join("human-export");
+    let export = sb
+        .cmd()
+        .args(["export", "01HUMANLIT", "--out"])
+        .arg(&out)
+        .arg("--redact")
+        .output()
+        .unwrap();
+    assert!(export.status.success(), "{}", stderr(&export));
+    let raw = std::fs::read_to_string(out.join("raw.redacted.jsonl")).unwrap();
+    assert!(!raw.contains("petru@example.test"), "{raw}");
+    assert!(raw.contains(r#""policy":"redacted""#), "{raw}");
+    assert!(raw.contains(r#""kind":"literal""#), "{raw}");
 }
 
 #[test]

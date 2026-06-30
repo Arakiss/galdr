@@ -100,6 +100,8 @@ pub fn run() -> Result<()> {
         tool_response: cursor_response(input.tool_response, input.tool_output),
         cwd: input.cwd,
         session_id: input.session_id.or(input.conversation_id),
+        event_kind: span::EventKind::ToolCall,
+        human: None,
     };
 
     let capture = config::Config::load_capture();
@@ -138,7 +140,7 @@ pub fn run() -> Result<()> {
     // notification is reconciled later from the span on disk.
     ipc::notify_best_effort(&ipc::Request::EventAppended {
         rec_id: active.rec_id.clone(),
-        event: event.clone(),
+        event: Box::new(event.clone()),
     });
 
     // Provenance seam: the core records nothing.

@@ -5,6 +5,8 @@
 //! same slug rules. Keeping a single source of truth here means a span step reads
 //! identically wherever it is shown.
 
+use crate::span::{Event, HumanEvent, HumanSource, HumanTarget, HumanValue, TargetLocator};
+
 /// Turns a name into a slug suitable for a skill directory.
 pub(crate) fn slugify(name: &str) -> String {
     let mut slug = String::new();
@@ -86,6 +88,169 @@ pub(crate) fn summarize_input(tool_name: &str, input: &serde_json::Value) -> Str
     let raw = raw.unwrap_or_else(|| describe_unknown(input));
 
     truncate(&raw, 160)
+}
+
+/// Summarizes any span event on one line.
+pub(crate) fn summarize_event(event: &Event) -> String {
+    if let Some(human) = event.human.as_ref()
+        && !event.event_kind.is_tool_call()
+    {
+        return summarize_human_event(human, &event.tool_name);
+    }
+    summarize_input(&event.tool_name, &event.tool_input)
+}
+
+fn summarize_human_event(human: &HumanEvent, fallback_action: &str) -> String {
+    let action = if human.action.as_str().is_empty() {
+        fallback_action
+    } else {
+        human.action.as_str()
+    };
+    let verb = action
+        .strip_prefix("human.browser.")
+        .or_else(|| action.strip_prefix("human."))
+        .unwrap_or(action);
+
+    match verb {
+        "navigate" => source_url(&human.source)
+            .map(|url| format!("navigate {url}"))
+            .unwrap_or_else(|| "navigate".to_string()),
+        "click" => human
+            .target
+            .as_ref()
+            .map(|target| format!("click {}", describe_target(target)))
+            .unwrap_or_else(|| "click".to_string()),
+        "input" => {
+            let target = human
+                .target
+                .as_ref()
+                .map(describe_target)
+                .unwrap_or_else(|| "field".to_string());
+            format!(
+                "type into {target} ({})",
+                describe_input_value(&human.value)
+            )
+        }
+        "select" => {
+            let target = human
+                .target
+                .as_ref()
+                .map(describe_target)
+                .unwrap_or_else(|| "field".to_string());
+            match human.value.as_ref() {
+                Some(HumanValue::Literal { value }) => {
+                    format!("select {target} = \"{}\"", truncate(value, 80))
+                }
+                Some(value) => format!("select {target} ({})", describe_value(value)),
+                None => format!("select {target}"),
+            }
+        }
+        "check" => {
+            let action = match human.value.as_ref() {
+                Some(HumanValue::Literal { value }) if value.eq_ignore_ascii_case("false") => {
+                    "uncheck"
+                }
+                _ => "check",
+            };
+            human
+                .target
+                .as_ref()
+                .map(|target| format!("{action} {}", describe_target(target)))
+                .unwrap_or_else(|| action.to_string())
+        }
+        "key" => match human.value.as_ref() {
+            Some(HumanValue::Literal { value }) => format!("key \"{}\"", truncate(value, 80)),
+            Some(value) => format!("key ({})", describe_value(value)),
+            None => "key".to_string(),
+        },
+        "submit" => human
+            .target
+            .as_ref()
+            .map(|target| format!("submit {}", describe_target(target)))
+            .unwrap_or_else(|| "submit".to_string()),
+        "wait" => human
+            .target
+            .as_ref()
+            .map(|target| format!("wait for {}", describe_target(target)))
+            .or_else(|| match human.value.as_ref() {
+                Some(HumanValue::Literal { value }) => {
+                    Some(format!("wait for \"{}\"", truncate(value, 80)))
+                }
+                Some(value) => Some(format!("wait ({})", describe_value(value))),
+                None => None,
+            })
+            .unwrap_or_else(|| "wait".to_string()),
+        "download" => match human.value.as_ref() {
+            Some(HumanValue::Literal { value }) => format!("download \"{}\"", truncate(value, 80)),
+            Some(value) => format!("download ({})", describe_value(value)),
+            None => "download".to_string(),
+        },
+        other => human
+            .target
+            .as_ref()
+            .map(|target| format!("{other} {}", describe_target(target)))
+            .unwrap_or_else(|| other.to_string()),
+    }
+}
+
+fn source_url(source: &HumanSource) -> Option<&str> {
+    match source {
+        HumanSource::Browser { url, .. } => url.as_deref(),
+        HumanSource::MacApp { .. } => None,
+    }
+}
+
+fn describe_target(target: &HumanTarget) -> String {
+    if let (Some(role), Some(name)) = (target.role.as_deref(), target.name.as_deref()) {
+        return format!("{role} \"{}\"", truncate(name, 80));
+    }
+    for value in [
+        target.label.as_deref(),
+        target.name.as_deref(),
+        target.text.as_deref(),
+        target.placeholder.as_deref(),
+        target.element_summary.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !value.trim().is_empty() {
+            return format!("\"{}\"", truncate(value, 80));
+        }
+    }
+    describe_locator(&target.primary)
+}
+
+fn describe_locator(locator: &TargetLocator) -> String {
+    match locator {
+        TargetLocator::Role { role, name } => name
+            .as_deref()
+            .map(|name| format!("{role} \"{}\"", truncate(name, 80)))
+            .unwrap_or_else(|| role.clone()),
+        TargetLocator::Label { value }
+        | TargetLocator::Placeholder { value }
+        | TargetLocator::TestId { value } => format!("\"{}\"", truncate(value, 80)),
+        TargetLocator::Css { value } => format!("css `{}`", truncate(value, 80)),
+        TargetLocator::XPath { value } => format!("xpath `{}`", truncate(value, 80)),
+    }
+}
+
+fn describe_input_value(value: &Option<HumanValue>) -> String {
+    match value {
+        Some(HumanValue::Literal { value }) => format!("text, {} chars", value.chars().count()),
+        Some(value) => describe_value(value),
+        None => "value omitted".to_string(),
+    }
+}
+
+fn describe_value(value: &HumanValue) -> String {
+    match value {
+        HumanValue::Omitted { reason } => format!("omitted: {reason}"),
+        HumanValue::Redacted { kind, chars } => chars
+            .map(|chars| format!("{kind}, {chars} chars"))
+            .unwrap_or_else(|| kind.clone()),
+        HumanValue::Literal { value } => format!("\"{}\"", truncate(value, 80)),
+    }
 }
 
 /// True for Claude's Computer Use tool (the built-in `computer-use` MCP server) and
@@ -241,7 +406,11 @@ fn describe_unknown(input: &serde_json::Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_computer_use, slugify, summarize_input, truncate};
+    use super::{is_computer_use, slugify, summarize_event, summarize_input, truncate};
+    use crate::span::{
+        Event, EventKind, HumanAction, HumanEvent, HumanSource, HumanTarget, HumanValue,
+        TargetLocator,
+    };
 
     #[test]
     fn slugify_normalizes_names() {
@@ -390,6 +559,81 @@ mod tests {
                 &serde_json::json!({ "selector": "#amount", "text": "42.50" })
             ),
             "selector=#amount · text=42.50"
+        );
+    }
+
+    #[test]
+    fn summarize_renders_human_browser_events() {
+        let click = Event {
+            ts: "2026-06-30T00:00:00Z".into(),
+            seq: 0,
+            tool_name: "human.browser.click".into(),
+            tool_input: serde_json::Value::Null,
+            tool_response: serde_json::Value::Null,
+            cwd: None,
+            session_id: None,
+            event_kind: EventKind::Human,
+            human: Some(HumanEvent {
+                source: HumanSource::Browser {
+                    url: Some("https://example.test/issues".into()),
+                    title: Some("Issues".into()),
+                    tab_id: None,
+                },
+                action: HumanAction::from("human.browser.click"),
+                target: Some(HumanTarget {
+                    primary: TargetLocator::Role {
+                        role: "button".into(),
+                        name: Some("Create issue".into()),
+                    },
+                    alternates: Vec::new(),
+                    role: Some("button".into()),
+                    name: Some("Create issue".into()),
+                    text: None,
+                    label: None,
+                    placeholder: None,
+                    element_summary: None,
+                }),
+                value: None,
+                verification_hint: None,
+                frame_ref: None,
+            }),
+        };
+        assert_eq!(summarize_event(&click), "click button \"Create issue\"");
+
+        let input = Event {
+            tool_name: "human.browser.input".into(),
+            event_kind: EventKind::Human,
+            human: Some(HumanEvent {
+                source: HumanSource::Browser {
+                    url: Some("https://example.test/issues/new".into()),
+                    title: None,
+                    tab_id: None,
+                },
+                action: HumanAction::from("human.browser.input"),
+                target: Some(HumanTarget {
+                    primary: TargetLocator::Label {
+                        value: "Issue title".into(),
+                    },
+                    alternates: Vec::new(),
+                    role: None,
+                    name: None,
+                    text: None,
+                    label: Some("Issue title".into()),
+                    placeholder: None,
+                    element_summary: None,
+                }),
+                value: Some(HumanValue::Redacted {
+                    kind: "text".into(),
+                    chars: Some(24),
+                }),
+                verification_hint: None,
+                frame_ref: None,
+            }),
+            ..click
+        };
+        assert_eq!(
+            summarize_event(&input),
+            "type into \"Issue title\" (text, 24 chars)"
         );
     }
 }

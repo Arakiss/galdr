@@ -36,7 +36,7 @@ pub enum Request {
     /// Liveness probe.
     Ping,
     /// The sensor appended an event to a span (best-effort index hint).
-    EventAppended { rec_id: String, event: Event },
+    EventAppended { rec_id: String, event: Box<Event> },
     /// A recording was closed and its metadata written.
     RecordingClosed { recording: Recording },
     /// A skill was installed from a recording.
