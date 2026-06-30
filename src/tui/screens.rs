@@ -1,7 +1,7 @@
 //! Rendering for the sidebar panels, the live preview, and the modal overlays.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
@@ -14,56 +14,61 @@ use crate::catalog;
 pub fn render<C: Catalog>(frame: &mut Frame, app: &mut App<C>) {
     let area = frame.area();
     let chunks = Layout::vertical([
-        Constraint::Length(1), // title strip
-        Constraint::Min(1),    // body: sidebar + preview
+        Constraint::Length(1), // title: version + counts + recording status
+        Constraint::Length(1), // tab bar
+        Constraint::Min(1),    // body: the active tab
         Constraint::Length(1), // status / keybar
     ])
     .split(area);
 
     render_title(frame, chunks[0], app);
-    // lazygit layout: a sidebar of lists on the left, a live preview of the focused
-    // selection on the right.
-    let cols = Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)])
-        .split(chunks[1]);
-    render_sidebar(frame, cols[0], app);
-    render_preview(frame, cols[1], app);
-    render_status(frame, chunks[2], app);
+    render_tabbar(frame, chunks[1], app);
+    render_body(frame, chunks[2], app);
+    render_status(frame, chunks[3], app);
 
     if let Some(overlay) = app.overlay.as_ref() {
         render_overlay(frame, area, app, overlay);
     }
 }
 
-/// The left column: the three lists stacked, the focused one highlighted.
-fn render_sidebar<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
-    let rows = Layout::vertical([
-        Constraint::Percentage(52),
-        Constraint::Percentage(30),
-        Constraint::Percentage(18),
-    ])
-    .split(area);
-    let on_list = !app.preview_focus;
-    render_recordings(
-        frame,
-        rows[0],
-        app,
-        on_list && app.focus == Panel::Recordings,
-    );
-    render_skills(frame, rows[1], app, on_list && app.focus == Panel::Skills);
-    render_harnesses(
-        frame,
-        rows[2],
-        app,
-        on_list && app.focus == Panel::Harnesses,
-    );
+/// The tab bar, eldr-style: each tab numbered, the active one bracketed and accented.
+fn render_tabbar<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
+    let mut spans = Vec::new();
+    for (i, tab) in Panel::ALL.iter().enumerate() {
+        let label = format!("{} {}", i + 1, tab.label());
+        if *tab == app.focus {
+            spans.push(Span::styled(format!(" [ {label} ] "), theme::title()));
+        } else {
+            spans.push(Span::styled(format!("  {label}  "), theme::dim()));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// The right column: the detail of whatever is selected in the focused panel.
-fn render_preview<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
+/// The active tab. The Overview is a full-width dashboard; the others are a list on the
+/// left and a live preview of the selection on the right.
+fn render_body<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
+    if app.focus == Panel::Overview {
+        render_overview(frame, area, app);
+        return;
+    }
+    let cols =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
+    let on_list = !app.preview_focus;
     match app.focus {
-        Panel::Recordings => render_detail(frame, area, app),
-        Panel::Skills => render_skill_preview(frame, area, app),
-        Panel::Harnesses => render_harness_preview(frame, area, app),
+        Panel::Recordings => {
+            render_recordings(frame, cols[0], app, on_list);
+            render_detail(frame, cols[1], app);
+        }
+        Panel::Skills => {
+            render_skills(frame, cols[0], app, on_list);
+            render_skill_preview(frame, cols[1], app);
+        }
+        Panel::Harnesses => {
+            render_harnesses(frame, cols[0], app, on_list);
+            render_harness_preview(frame, cols[1], app);
+        }
+        Panel::Overview => {}
     }
 }
 
@@ -160,17 +165,154 @@ fn block(title: &str) -> Block<'static> {
 }
 
 fn render_title<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
-    let mut spans = vec![
-        Span::styled("✦ galdr", theme::title()),
-        Span::styled("  record & replay for agent skills", theme::dim()),
-    ];
-    if app.recording_active {
-        spans.push(Span::styled("   ● REC ", theme::warn()));
-        if let Some(name) = &app.active_name {
-            spans.push(Span::styled(name.clone(), theme::warn()));
+    let left = Line::from(vec![
+        Span::styled(
+            concat!("✦ galdr v", env!("CARGO_PKG_VERSION")),
+            theme::title(),
+        ),
+        Span::styled(
+            format!(
+                "   ·   {} recordings   ·   {} galdr · {} ext skills",
+                app.recordings.len(),
+                app.galdr_skill_count(),
+                app.external_skill_count()
+            ),
+            theme::dim(),
+        ),
+    ]);
+    let right = if app.recording_active {
+        Line::from(Span::styled(
+            format!("● REC {} ", app.active_name.as_deref().unwrap_or("")),
+            theme::warn(),
+        ))
+    } else {
+        Line::from(Span::styled("● idle ", theme::dim()))
+    };
+    let cols =
+        Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
+    frame.render_widget(Paragraph::new(left), cols[0]);
+    frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), cols[1]);
+}
+
+/// The Overview tab: a dashboard of what galdr has and what needs attention, so a human
+/// opening the TUI is oriented at a glance before drilling into any list.
+fn render_overview<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // The surfaced insight line: what is actionable right now (eldr's ⚠ line).
+    let drafts = app.draft_count();
+    let undistilled = app.undistilled_count();
+    if drafts > 0 || undistilled > 0 {
+        let mut parts = Vec::new();
+        if drafts > 0 {
+            parts.push(format!("{drafts} skill(s) await authoring"));
         }
+        if undistilled > 0 {
+            parts.push(format!("{undistilled} recording(s) not yet a skill"));
+        }
+        lines.push(Line::styled(
+            format!("⚠ {}", parts.join("   ·   ")),
+            theme::warn(),
+        ));
+    } else {
+        lines.push(Line::styled(
+            "✓ every recording distilled and authored",
+            theme::ok(),
+        ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    lines.push(Line::raw(""));
+
+    // Big-number stats.
+    let ready = app
+        .avg_readiness()
+        .map(|r| r.to_string())
+        .unwrap_or_else(|| "—".into());
+    lines.push(Line::from(vec![
+        Span::styled("SKILLS ", theme::dim()),
+        Span::styled(app.skills.len().to_string(), theme::title()),
+        Span::styled(
+            format!(
+                "  {} galdr · {} ext",
+                app.galdr_skill_count(),
+                app.external_skill_count()
+            ),
+            theme::dim(),
+        ),
+        Span::styled("      READY ", theme::dim()),
+        Span::styled(ready, theme::title()),
+        Span::styled("      RECORDINGS ", theme::dim()),
+        Span::styled(app.recordings.len().to_string(), theme::title()),
+    ]));
+    lines.push(Line::raw(""));
+
+    // Recent recordings.
+    lines.push(Line::styled("Recent recordings", theme::ok()));
+    if app.recordings.is_empty() {
+        lines.push(Line::styled(
+            "  (none yet — `galdr rec start <name>`)",
+            theme::dim(),
+        ));
+    }
+    for r in app.recordings.iter().take(5) {
+        let (mark, mstyle) = if r.distilled {
+            ("✓", theme::ok())
+        } else {
+            ("·", theme::dim())
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {mark} "), mstyle),
+            Span::styled(format!("{:<26}", ellipsize(&r.name, 26)), theme::text()),
+            Span::styled(short_ts(&r.started_at), theme::dim()),
+        ]));
+    }
+    lines.push(Line::raw(""));
+
+    // Your distilled skills.
+    lines.push(Line::styled("Your skills", theme::ok()));
+    let galdr_skills: Vec<_> = app
+        .skills
+        .iter()
+        .filter(|s| s.origin == catalog::ORIGIN_GALDR)
+        .collect();
+    if galdr_skills.is_empty() {
+        lines.push(Line::styled(
+            "  (none yet — distill a recording on the Recordings tab)",
+            theme::dim(),
+        ));
+    }
+    for s in galdr_skills.iter().take(5) {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<26}", ellipsize(&s.skill_name, 26)),
+                theme::text(),
+            ),
+            Span::styled(
+                format!("{:<7}", s.status),
+                readiness_style(s.readiness_score),
+            ),
+            Span::styled(format!("rdy {}", s.readiness_score), theme::dim()),
+        ]));
+    }
+    lines.push(Line::raw(""));
+
+    // Harnesses and their sensor wiring.
+    let mut hspans = vec![Span::styled("Harnesses   ", theme::dim())];
+    for h in app.harnesses.iter().filter(|h| h.detected) {
+        let (mark, st) = match h.galdr_hook {
+            Some(true) => ("✓", theme::ok()),
+            Some(false) => ("✗", theme::warn()),
+            None => ("·", theme::dim()),
+        };
+        hspans.push(Span::styled(format!("{mark} {}    ", h.name), st));
+    }
+    lines.push(Line::from(hspans));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "Tab or 1–4 move between tabs · Enter browse recordings · ? help · q quit",
+        theme::dim(),
+    ));
+
+    frame.render_widget(Paragraph::new(lines).block(block("Overview")), area);
 }
 
 fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
@@ -191,13 +333,14 @@ fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
         }
     } else {
         match app.focus {
+            Panel::Overview => "tab/1-4 move · enter browse recordings · ? help · q quit",
             Panel::Recordings => {
-                "jk move · enter inspect · d distill · e export · / filter · r replay · tab panel · ?"
+                "jk move · enter inspect · d distill · e export · / filter · r replay · tab · ?"
             }
             Panel::Skills => {
                 "jk move · enter read · l link · v validate · O outcome · / filter · tab · ?"
             }
-            Panel::Harnesses => "jk move · tab/1-3 panel · ? help · q quit",
+            Panel::Harnesses => "jk move · tab/1-4 tab · ? help · q quit",
         }
     };
     let mut spans = Vec::new();
@@ -763,18 +906,21 @@ mod tests {
     }
 
     #[test]
-    fn landing_shows_the_sidebar_and_a_live_preview() {
-        // The lazygit layout: all three lists in the sidebar at once, plus a live
-        // preview of the focused (Recordings) selection — no drill-in needed.
+    fn landing_shows_the_overview() {
+        // The TUI opens on the Overview tab — a dashboard that orients you, not a raw
+        // list. The tab bar names every tab; switching to Recordings shows the steps.
         let mut app = App::new(fixture());
         let s = render_text(&mut app);
-        assert!(s.contains("Recordings"));
-        assert!(s.contains("Skills"));
-        assert!(s.contains("Harnesses"));
-        assert!(s.contains("tui demo")); // the recording, in the sidebar
-        // The preview pane shows the selected recording's steps, live.
-        assert!(s.contains("Steps"));
-        assert!(s.contains("git status"));
+        assert!(s.contains("Overview"));
+        assert!(s.contains("Recent recordings"));
+        assert!(s.contains("tui demo")); // the recording, listed in the overview
+        assert!(s.contains("Your skills"));
+        assert!(s.contains("Recordings") && s.contains("Skills")); // the tab bar
+        // Tab 2 (Recordings) opens the steps inspector.
+        app.on_key(key(KeyCode::Char('2')));
+        let rec = render_text(&mut app);
+        assert!(rec.contains("Steps"));
+        assert!(rec.contains("git status"));
     }
 
     #[test]
@@ -826,8 +972,9 @@ mod tests {
             detail: Some(detail),
             raw,
         };
-        // `App::new` selects the first recording and projects its detail.
-        let app = App::new(mock);
+        // The Recordings tab (2) selects the first recording and projects its detail.
+        let mut app = App::new(mock);
+        app.on_key(key(KeyCode::Char('2')));
         assert_eq!(app.hidden_steps, 1, "the galdr control command is hidden");
         let steps = &app.detail.as_ref().unwrap().steps;
         assert_eq!(steps.len(), 1, "only the meaningful step remains");
@@ -837,15 +984,15 @@ mod tests {
     #[test]
     fn panel_keys_move_focus_and_the_preview_follows() {
         let mut app = App::new(fixture());
-        // Focus Skills (panel 2); the preview switches to the skill's SKILL.md.
-        app.on_key(key(KeyCode::Char('2')));
+        // Focus Skills (tab 3); the body is the skills list + the skill's SKILL.md.
+        app.on_key(key(KeyCode::Char('3')));
         let skills = render_text(&mut app);
         assert!(skills.contains("galdr-tui-demo"));
         assert!(skills.contains("extern")); // the bun skill is marked external
         assert!(skills.contains("Skill ·")); // the preview pane is now a skill preview
 
-        // Focus Harnesses (panel 3); the preview switches to the harness detail.
-        app.on_key(key(KeyCode::Char('3')));
+        // Focus Harnesses (tab 4); the body switches to the harness detail.
+        app.on_key(key(KeyCode::Char('4')));
         let harn = render_text(&mut app);
         assert!(harn.contains("Claude Code"));
         assert!(harn.contains("Harness ·"));
@@ -853,7 +1000,8 @@ mod tests {
 
     #[test]
     fn enter_focuses_the_preview_and_opens_a_step_raw() {
-        let mut app = App::new(fixture()); // Recordings focused, preview live
+        let mut app = App::new(fixture());
+        app.on_key(key(KeyCode::Char('2'))); // Recordings tab
         let insp = render_text(&mut app);
         assert!(insp.contains("Inspector"));
         assert!(insp.contains("Steps"));
@@ -869,7 +1017,7 @@ mod tests {
     #[test]
     fn filter_narrows_the_skills_list() {
         let mut app = App::new(fixture());
-        app.on_key(key(KeyCode::Char('2'))); // Skills
+        app.on_key(key(KeyCode::Char('3'))); // Skills
         app.on_key(key(KeyCode::Char('/')));
         for c in "tui".chars() {
             app.on_key(key(KeyCode::Char(c)));
@@ -886,7 +1034,7 @@ mod tests {
         // skill_path doesn't exist, so it reports it can't read it — proving the action
         // is wired to the selection, with no filesystem writes (validate is read-only).
         let mut app = App::new(fixture());
-        app.on_key(key(KeyCode::Char('2'))); // Skills
+        app.on_key(key(KeyCode::Char('3'))); // Skills
         app.on_key(key(KeyCode::Char('v'))); // validate
         assert!(app.status.contains("galdr-tui-demo"), "{}", app.status);
     }
@@ -894,7 +1042,7 @@ mod tests {
     #[test]
     fn skill_preview_scrolls_when_focused() {
         let mut app = App::new(fixture());
-        app.on_key(key(KeyCode::Char('2'))); // Skills
+        app.on_key(key(KeyCode::Char('3'))); // Skills
         app.preview_md = "a\nb\nc\nd\ne".to_string(); // simulate a loaded SKILL.md
         app.on_key(key(KeyCode::Enter)); // focus the preview to scroll
         assert!(app.preview_focus);
