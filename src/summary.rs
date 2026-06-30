@@ -135,7 +135,7 @@ fn summarize_human_event(human: &HumanEvent, fallback_action: &str) -> String {
             let target = human
                 .target
                 .as_ref()
-                .map(describe_target)
+                .map(describe_target_label)
                 .unwrap_or_else(|| "field".to_string());
             match human.value.as_ref() {
                 Some(HumanValue::Literal { value }) => {
@@ -219,6 +219,23 @@ fn describe_target(target: &HumanTarget) -> String {
         }
     }
     describe_locator(&target.primary)
+}
+
+fn describe_target_label(target: &HumanTarget) -> String {
+    for value in [
+        target.label.as_deref(),
+        target.name.as_deref(),
+        target.text.as_deref(),
+        target.placeholder.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !value.trim().is_empty() {
+            return format!("\"{}\"", truncate(value, 80));
+        }
+    }
+    describe_target(target)
 }
 
 fn describe_locator(locator: &TargetLocator) -> String {
