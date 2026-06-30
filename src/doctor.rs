@@ -2,7 +2,22 @@
 
 use anyhow::{Result, bail};
 
-use crate::{catalog, config, ipc, paths, record, setup, validate};
+use crate::{catalog, config, ipc, paths, record, setup, style, validate};
+
+/// A green `ok` status line. The 4-char tag + a space keeps every line's text aligned.
+fn ok(msg: impl AsRef<str>) {
+    println!("{}  {}", style::green("ok"), msg.as_ref());
+}
+
+/// An amber `warn` status line.
+fn warn(msg: impl AsRef<str>) {
+    println!("{} {}", style::amber("warn"), msg.as_ref());
+}
+
+/// A red `err` status line.
+fn err(msg: impl AsRef<str>) {
+    println!("{}  {}", style::red("err"), msg.as_ref());
+}
 
 pub fn run() -> Result<()> {
     let mut issues = Vec::new();
@@ -11,21 +26,24 @@ pub fn run() -> Result<()> {
     check_path("skills root", paths::skills_root().ok(), &mut issues);
 
     match config::Config::load() {
-        Ok(cfg) => println!("ok   config endpoint is loopback: {}", cfg.endpoint),
-        Err(err) => {
-            println!("err  config: {err:#}");
+        Ok(cfg) => ok(format!("config endpoint is loopback: {}", cfg.endpoint)),
+        Err(e) => {
+            err(format!("config: {e:#}"));
             issues.push("config is invalid".to_string());
         }
     }
 
     match ipc::query(&ipc::Request::Ping) {
-        Ok(ipc::Response::Pong) => println!("ok   daemon is running"),
-        _ => println!("warn daemon is not running; CLI fallbacks will be used"),
+        Ok(ipc::Response::Pong) => ok("daemon is running"),
+        _ => warn("daemon is not running; CLI fallbacks will be used"),
     }
 
     match record::read_active() {
-        Some(active) => println!("ok   active recording: {} ({})", active.name, active.rec_id),
-        None => println!("ok   no active recording"),
+        Some(active) => ok(format!(
+            "active recording: {} ({})",
+            active.name, active.rec_id
+        )),
+        None => ok("no active recording"),
     }
 
     match catalog::open_in_memory_indexed() {
@@ -44,55 +62,57 @@ pub fn run() -> Result<()> {
                     )
                 })
                 .count();
-            println!(
-                "ok   catalog rebuild check: {} recordings, {} skills, {} usages, {} outcomes",
+            ok(format!(
+                "catalog rebuild check: {} recordings, {} skills, {} usages, {} outcomes",
                 recordings.len(),
                 skills.len(),
                 usages.len(),
                 outcomes.len()
-            );
+            ));
             if orphan_count > 0 {
-                println!("warn {orphan_count} skill(s) have missing recording provenance");
+                warn(format!(
+                    "{orphan_count} skill(s) have missing recording provenance"
+                ));
             }
             if draft_count > 0 {
-                println!("warn {draft_count} skill(s) are still drafts");
+                warn(format!("{draft_count} skill(s) are still drafts"));
             }
             report_discoverability(&skills);
             report_validation(&skills);
         }
-        Err(err) => {
-            println!("err  catalog rebuild check failed: {err:#}");
+        Err(e) => {
+            err(format!("catalog rebuild check failed: {e:#}"));
             issues.push("catalog cannot be rebuilt from disk".to_string());
         }
     }
 
     match crate::skill::installed_version() {
         Some(v) if crate::skill::is_current() => {
-            println!("ok   galdr skill installed and current (version {v})")
+            ok(format!("galdr skill installed and current (version {v})"))
         }
-        Some(v) => println!(
-            "warn galdr skill is stale (installed {v}, binary {}); run `galdr setup skill`",
+        Some(v) => warn(format!(
+            "galdr skill is stale (installed {v}, binary {}); run `galdr setup skill`",
             env!("CARGO_PKG_VERSION")
-        ),
-        None => println!(
-            "warn galdr skill not installed; run `galdr setup skill` so your agent can drive galdr"
-        ),
+        )),
+        None => {
+            warn("galdr skill not installed; run `galdr setup skill` so your agent can drive galdr")
+        }
     }
 
     match setup::claude_hook_configured() {
-        Some(true) => println!("ok   Claude Code PostToolUse hook is configured"),
+        Some(true) => ok("Claude Code PostToolUse hook is configured"),
         Some(false) => {
-            println!("warn Claude Code PostToolUse hook is missing");
+            warn("Claude Code PostToolUse hook is missing");
             issues.push("Claude Code hook is missing".to_string());
         }
         None => {
-            println!("warn Claude Code settings not found or unreadable");
+            warn("Claude Code settings not found or unreadable");
             issues.push("Claude Code settings are unavailable".to_string());
         }
     }
 
     if issues.is_empty() {
-        println!("doctor: ok");
+        println!("{}", style::green("doctor: ok"));
         Ok(())
     } else {
         bail!("doctor found {} actionable issue(s)", issues.len())
@@ -134,15 +154,15 @@ fn report_discoverability(skills: &[catalog::SkillRow]) {
         }
     }
     if unreachable > 0 {
-        println!(
-            "warn {unreachable} galdr skill(s) are not discoverable by an installed harness; run `galdr link`"
-        );
+        warn(format!(
+            "{unreachable} galdr skill(s) are not discoverable by an installed harness; run `galdr link`"
+        ));
     } else {
-        println!(
-            "ok   {} galdr skill(s) discoverable across {} harness(es)",
+        ok(format!(
+            "{} galdr skill(s) discoverable across {} harness(es)",
             galdr_skills.len(),
             harnesses.len()
-        );
+        ));
     }
 }
 
@@ -175,29 +195,32 @@ fn report_validation(skills: &[catalog::SkillRow]) {
         }
     }
     if failing.is_empty() {
-        println!(
-            "ok   {} galdr skill(s) pass the validation gate",
+        ok(format!(
+            "{} galdr skill(s) pass the validation gate",
             galdr.len()
-        );
+        ));
     } else {
-        println!(
-            "warn {} galdr skill(s) would fail the validation gate: {}",
+        warn(format!(
+            "{} galdr skill(s) would fail the validation gate: {}",
             failing.len(),
             failing.join(", ")
+        ));
+        println!(
+            "     {}",
+            style::dim("fix or re-distill them; run `galdr validate <skill>` for the findings")
         );
-        println!("     fix or re-distill them; run `galdr validate <skill>` for the findings");
     }
 }
 
 fn check_path(label: &str, path: Option<std::path::PathBuf>, issues: &mut Vec<String>) {
     let Some(path) = path else {
-        println!("err  {label}: path unavailable");
+        err(format!("{label}: path unavailable"));
         issues.push(format!("{label} unavailable"));
         return;
     };
     if path.exists() {
-        println!("ok   {label}: {}", path.display());
+        ok(format!("{label}: {}", path.display()));
     } else {
-        println!("warn {label} missing: {}", path.display());
+        warn(format!("{label} missing: {}", path.display()));
     }
 }

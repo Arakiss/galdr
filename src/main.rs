@@ -1063,10 +1063,21 @@ fn print_skills(skills: &[catalog::SkillRow]) {
         .filter(|s| s.origin == catalog::ORIGIN_GALDR)
         .count();
     for skill in sorted {
-        let origin = if skill.origin == catalog::ORIGIN_GALDR {
-            "galdr "
+        let is_galdr = skill.origin == catalog::ORIGIN_GALDR;
+        // Pad before coloring so the ANSI codes never skew the columns.
+        let name = style::accent(&format!("{:<28}", skill.skill_name));
+        let origin = if is_galdr {
+            style::accent("galdr ")
         } else {
-            "extern"
+            style::dim("extern")
+        };
+        let ready_num = format!("{:>3}", skill.readiness_score);
+        let ready = if skill.readiness_score >= 80 {
+            style::green(&ready_num)
+        } else if skill.readiness_score >= 60 {
+            style::amber(&ready_num)
+        } else {
+            style::red(&ready_num)
         };
         let delta = match skill.readiness_delta.cmp(&0) {
             std::cmp::Ordering::Greater => format!("+{}", skill.readiness_delta),
@@ -1079,19 +1090,19 @@ fn print_skills(skills: &[catalog::SkillRow]) {
             None => "← (no provenance)".to_string(),
         };
         println!(
-            "{:<28}  {:<6}  {:<11}  readiness {:>3} ({:>3})  {:<36}  {}",
-            skill.skill_name,
+            "{}  {}  {:<11}  readiness {} ({:>3})  {}  {}",
+            name,
             origin,
             skill.status,
-            skill.readiness_score,
+            ready,
             delta,
-            provenance,
-            skill.readiness_notes
+            style::dim(&format!("{provenance:<36}")),
+            style::dim(&skill.readiness_notes),
         );
     }
     println!(
         "\n{} galdr · {} external",
-        galdr_count,
+        style::accent(&galdr_count.to_string()),
         skills.len() - galdr_count
     );
 }
