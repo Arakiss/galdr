@@ -21,6 +21,9 @@
     { "type": "test", "section": "Tests", "hidden": true }
   ],
   "packages": {
-    ".": { "component": "" }
+    ".": {
+      "component": "galdr",
+      "package-name": "galdr"
+    }
   }
 }

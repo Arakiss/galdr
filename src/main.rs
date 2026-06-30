@@ -77,7 +77,7 @@ enum Commands {
         /// Distill autonomously with a local MLX engine.
         #[arg(long)]
         auto: bool,
-        /// Engine for `--auto`: mlx-http, mlx-subprocess, or agent.
+        /// Engine for `--auto`: mlx-http or agent.
         #[arg(long, value_name = "ENGINE", requires = "auto")]
         engine: Option<String>,
         /// Name the skill (slugified) instead of the mechanical `galdr-<slug>`.
