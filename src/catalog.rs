@@ -859,7 +859,8 @@ pub fn list_skill_outcomes(
 /// that a dropped notification left unindexed. Idempotent and bounded — it only
 /// touches the active recording's tail and closed recordings not yet present.
 pub fn reconcile(conn: &Connection) -> Result<()> {
-    if let Some(active) = crate::record::read_active() {
+    // Reconcile the tail of every concurrently-active recording, not just one.
+    for active in crate::record::read_active_all() {
         let span_path = crate::paths::span_file(&active.rec_id)?;
         let stored: i64 = conn.query_row(
             "SELECT COALESCE(MAX(seq), -1) FROM steps WHERE rec_id = ?1",

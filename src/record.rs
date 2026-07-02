@@ -1,4 +1,6 @@
-//! Recording control: active-session flag, span open/close, and metadata on stop.
+//! Recording control: active-session flags, span open/close, and metadata on stop.
+
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -48,32 +50,89 @@ pub fn now_rfc3339() -> String {
         .unwrap_or_default()
 }
 
-/// Reads the active-recording flag. `None` if there is none (or if the flag is
-/// corrupt: treated as "not recording", which is the safe side).
-pub fn read_active() -> Option<ActiveRec> {
-    let path = paths::active_flag().ok()?;
-    let contents = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&contents).ok()
+/// Folds a legacy single `~/.galdr/active` flag into the `active.d/` scheme, once.
+/// Idempotent and concurrency-safe (atomic write, tolerant remove): a present,
+/// parseable flag is rewritten as `active.d/<rec_id>.json` and the legacy file
+/// removed; a corrupt or absent flag is a no-op (it holds no recording to preserve).
+/// This is how an in-progress recording survives the upgrade to concurrent capture.
+pub fn migrate_legacy_active() {
+    let Ok(legacy) = paths::legacy_active_flag() else {
+        return;
+    };
+    let Ok(contents) = std::fs::read_to_string(&legacy) else {
+        return; // absent (or unreadable): nothing to migrate.
+    };
+    let Ok(active) = serde_json::from_str::<ActiveRec>(&contents) else {
+        return; // corrupt: no recording to preserve; leave it for `read_active_all` to ignore.
+    };
+    if write_active(&active).is_ok() {
+        let _ = std::fs::remove_file(&legacy);
+    }
 }
 
-/// Writes (or overwrites) the active-recording flag.
+/// Every active recording, newest first (`rec_id` is a time-sortable ULID). Folds a
+/// legacy `active` flag in first, so no in-progress recording is dropped on upgrade.
+pub fn read_active_all() -> Vec<ActiveRec> {
+    migrate_legacy_active();
+    let Ok(dir) = paths::active_dir() else {
+        return Vec::new();
+    };
+    let mut actives: Vec<ActiveRec> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(contents) = std::fs::read_to_string(&path)
+                && let Ok(active) = serde_json::from_str::<ActiveRec>(&contents)
+            {
+                actives.push(active);
+            }
+        }
+    }
+    actives.sort_by(|a, b| b.rec_id.cmp(&a.rec_id));
+    actives
+}
+
+/// Writes (or overwrites) one recording's active flag under `active.d/`, atomically.
 pub fn write_active(active: &ActiveRec) -> Result<()> {
     paths::ensure_dirs()?;
-    let path = paths::active_flag()?;
-    std::fs::write(path, serde_json::to_string_pretty(active)?)?;
+    let path = paths::active_file(&active.rec_id)?;
+    write_atomic(&path, serde_json::to_string_pretty(active)?.as_bytes())
+}
+
+/// Drops one recording's active flag (best-effort; a missing file is fine).
+fn remove_active(rec_id: &str) -> Result<()> {
+    let path = paths::active_file(rec_id)?;
+    let _ = std::fs::remove_file(path);
     Ok(())
 }
 
-/// Starts a recording. Fails if one is already active.
+/// Writes bytes to `path` atomically: a uniquely-named temp file in the same
+/// directory, then a rename over the target. Two concurrent hooks (different sessions)
+/// write different files, and the rename guarantees no reader ever sees a half-written
+/// flag even if a hook is interrupted mid-write.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("active");
+    let tmp = dir.join(format!(".{stem}.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, bytes).with_context(|| format!("could not write {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("could not install {}", path.display()))?;
+    Ok(())
+}
+
+/// Starts a recording. Concurrency-friendly: several can be active at once, each
+/// scoped by the session that first acts under its `origin_cwd`. The recording begins
+/// **unbound**; the sensor binds it to the first eligible session (see `hook`). If the
+/// starting session already has a bound recording, this one simply waits unbound until
+/// that one stops — the lock lives in the binding, not in `start`.
 pub fn start(name: Option<String>) -> Result<()> {
-    if let Some(existing) = read_active() {
-        bail!(
-            "a recording is already active: {} ({}). Run `galdr rec stop` first.",
-            existing.name,
-            existing.rec_id
-        );
-    }
     paths::ensure_dirs()?;
+    migrate_legacy_active();
 
     let rec_id = Ulid::new().to_string();
     let name = name.unwrap_or_else(|| "rec".to_string());
@@ -99,13 +158,42 @@ pub fn start(name: Option<String>) -> Result<()> {
         .with_context(|| format!("could not open span {}", span_path.display()))?;
 
     println!("{} recording \"{name}\"", crate::style::red("●"));
-    println!("  do the task, then:  galdr rec stop");
+    let others = read_active_all().len().saturating_sub(1);
+    if others > 0 {
+        println!(
+            "  ({others} other recording(s) already active — this one binds to the session that next acts here)"
+        );
+    }
+    println!("  do the task, then:  galdr rec stop [name]");
     Ok(())
 }
 
-/// Stops the active recording and writes its metadata.
-pub fn stop() -> Result<()> {
-    let active = read_active().context("no active recording")?;
+/// Stops an active recording and writes its metadata. With `reference` (a name,
+/// `rec_id`, or unique prefix) stops that one; without it, stops the sole active
+/// recording, or errors listing them when several are active.
+pub fn stop(reference: Option<&str>) -> Result<()> {
+    let actives = read_active_all();
+    if actives.is_empty() {
+        bail!("no active recording");
+    }
+    let target = match reference.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(reference) => resolve_active(&actives, reference)?,
+        None if actives.len() == 1 => actives.into_iter().next().unwrap(),
+        None => {
+            let list = actives
+                .iter()
+                .map(|a| format!("{} ({})", a.name, a.rec_id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("multiple recordings active — specify which: {list}");
+        }
+    };
+    stop_one(&target)
+}
+
+/// Closes one active recording: persist the span, write its metadata, drop its flag,
+/// and best-effort index it.
+fn stop_one(active: &ActiveRec) -> Result<()> {
     let span_path = paths::span_file(&active.rec_id)?;
     // Durably persist the span before we declare the recording closed. Best-effort:
     // a sync failure must not block stopping (the events are already in the file).
@@ -126,8 +214,8 @@ pub fn stop() -> Result<()> {
     let rec_path = paths::recording_file(&active.rec_id)?;
     std::fs::write(&rec_path, serde_json::to_string_pretty(&recording)?)?;
 
-    // Drop the flag: from here on the sensor stops recording.
-    let _ = std::fs::remove_file(paths::active_flag()?);
+    // Drop this recording's flag: from here on the sensor stops recording it.
+    remove_active(&active.rec_id)?;
 
     // Keep the local catalog current even when the daemon is not running. This
     // is best-effort because the span + recording metadata are the truth.
@@ -146,6 +234,39 @@ pub fn stop() -> Result<()> {
     );
     println!("  turn it into a skill:  galdr distill");
     Ok(())
+}
+
+/// Resolves a reference (exact `rec_id`, unique case-insensitive `rec_id` prefix, or
+/// name) to one active recording — the [`resolve_in`] equivalent for the active set.
+/// An ambiguous name is refused (unlike closed recordings, stopping the wrong live
+/// recording is not recoverable), and misses point at `galdr rec status`.
+fn resolve_active(actives: &[ActiveRec], reference: &str) -> Result<ActiveRec> {
+    if let Some(active) = actives.iter().find(|a| a.rec_id == reference) {
+        return Ok(active.clone());
+    }
+    let upper = reference.to_ascii_uppercase();
+    let by_prefix: Vec<&ActiveRec> = actives
+        .iter()
+        .filter(|a| a.rec_id.starts_with(&upper))
+        .collect();
+    if by_prefix.len() == 1 {
+        return Ok(by_prefix[0].clone());
+    }
+    if by_prefix.len() > 1 {
+        bail!(
+            "`{reference}` matches {} active recordings — add more characters, or use the name (see `galdr rec status`).",
+            by_prefix.len()
+        );
+    }
+    let by_name: Vec<&ActiveRec> = actives.iter().filter(|a| a.name == reference).collect();
+    match by_name.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => bail!("no active recording matches `{reference}` — run `galdr rec status`."),
+        many => bail!(
+            "`{reference}` matches {} active recordings named that — use the rec_id (see `galdr rec status`).",
+            many.len()
+        ),
+    }
 }
 
 /// All closed recordings, newest first (the rec_id is a ULID, time-sortable).

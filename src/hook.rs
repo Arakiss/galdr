@@ -47,11 +47,13 @@ pub fn run() -> Result<()> {
         panic!("forced failure for the sensor robustness test");
     }
 
-    // No active recording: nothing to do, fast exit.
-    let active = match record::read_active() {
-        Some(active) => active,
-        None => return Ok(()),
-    };
+    // No active recording anywhere: nothing to do, fast exit. Reading the active set
+    // is O(active recordings) — a directory listing, no locks — so PostToolUse stays
+    // fast even with several concurrent sessions recording.
+    let actives = record::read_active_all();
+    if actives.is_empty() {
+        return Ok(());
+    }
 
     // Cap how much we read: a hostile or buggy harness could pipe an enormous
     // payload, and an unbounded `read_to_string` would OOM-abort the process before
@@ -79,15 +81,19 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    // Session scoping: a single global `active` flag means every concurrent agent
-    // session's hook sees this recording. Without scoping, a session in another
-    // project would leak its tool calls (and their payloads) into this span. Bind
-    // the recording to the first session whose event lands under `origin_cwd`, then
-    // record only that session.
-    let decision = capture_decision(&active, input.session_id.as_deref(), input.cwd.as_deref());
-    if matches!(decision, Capture::Skip) {
+    // Route the event to at most one recording: the recording bound to this session
+    // if any; else bind the most recent unbound recording eligible by `origin_cwd`;
+    // else drop it. This keeps concurrent sessions' spans separate, so a session in
+    // another project never leaks its tool calls (and payloads) into another's span.
+    let route = route_event(&actives, input.session_id.as_deref(), input.cwd.as_deref());
+    let Route::Record { rec_id, bind } = route else {
         return Ok(());
-    }
+    };
+    // The chosen recording's current flag, for its transcript/binding fields.
+    let active = actives
+        .into_iter()
+        .find(|a| a.rec_id == rec_id)
+        .expect("routed rec_id is one of the active recordings");
 
     let span_path = paths::span_file(&active.rec_id)?;
     let mut event = span::Event {
@@ -147,11 +153,8 @@ pub fn run() -> Result<()> {
     ext::NoopExt.record(&event);
 
     // Persist any new session binding and capture the transcript once, in a single
-    // write of the active flag.
-    let new_binding = match decision {
-        Capture::RecordAndBind(session_id) => Some(session_id),
-        _ => None,
-    };
+    // write of this recording's active flag.
+    let new_binding = bind;
     let new_transcript = input
         .transcript_path
         .filter(|_| active.transcript_path.is_none());
@@ -166,46 +169,72 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// What the sensor should do with one event, given the recording's binding state.
-enum Capture {
-    /// Drop it: a different session, or a foreign session before binding.
+/// Where the sensor routes one event.
+enum Route {
+    /// Drop it: no active recording owns this session, and none is free to claim it.
     Skip,
-    /// Append it; the recording is already bound (or cannot be session-scoped).
-    Record,
-    /// Append it and lock the recording onto this session id.
-    RecordAndBind(String),
+    /// Append it to `rec_id`; when `bind` is set, lock that recording onto the session.
+    Record {
+        rec_id: String,
+        bind: Option<String>,
+    },
 }
 
-/// Decides capture for one event. The rule: a session-less event is always
-/// recorded (so harnesses that omit the id, and the no-scope case, keep working);
-/// once bound, only the bound session records; before binding, the first event
-/// carrying a session id binds — but only if it happened under `origin_cwd`, so a
-/// concurrent session in another directory can never claim the recording.
-fn capture_decision(
-    active: &record::ActiveRec,
+/// Routes one event to at most one active recording, deterministically. `actives` is
+/// newest-first, so "the most recent" is simply the first match.
+///
+/// 1. A recording already **bound** to this session gets the event.
+/// 2. Otherwise, if the event carries a session id, the most recent **unbound**
+///    recording eligible by `origin_cwd` is bound to this session and gets the event.
+///    So the first real event after `galdr rec start` binds the recording to the
+///    session that started it, and a session in another directory cannot claim it —
+///    nor can a session that already owns a recording steal a second one (step 1 keeps
+///    routing its events to the first, leaving the extra recording waiting unbound).
+/// 3. A session-less event goes to the most recent active recording (harnesses that
+///    omit the id, and the single-recording case, keep working).
+/// 4. Anything else is dropped.
+fn route_event(
+    actives: &[record::ActiveRec],
     session_id: Option<&str>,
     cwd: Option<&str>,
-) -> Capture {
-    match active.bound_session.as_deref() {
-        Some(bound) => match session_id {
-            Some(sid) if sid == bound => Capture::Record,
-            Some(_) => Capture::Skip,
-            None => Capture::Record,
-        },
-        None => match session_id {
-            None => Capture::Record,
-            Some(sid) => {
-                let cwd_ok = match (active.origin_cwd.as_deref(), cwd) {
-                    (None, _) | (Some(_), None) => true,
-                    (Some(origin), Some(cwd)) => path_within(cwd, origin),
-                };
-                if cwd_ok {
-                    Capture::RecordAndBind(sid.to_string())
-                } else {
-                    Capture::Skip
-                }
-            }
-        },
+) -> Route {
+    let Some(sid) = session_id else {
+        return match actives.first() {
+            Some(a) => Route::Record {
+                rec_id: a.rec_id.clone(),
+                bind: None,
+            },
+            None => Route::Skip,
+        };
+    };
+    if let Some(a) = actives
+        .iter()
+        .find(|a| a.bound_session.as_deref() == Some(sid))
+    {
+        return Route::Record {
+            rec_id: a.rec_id.clone(),
+            bind: None,
+        };
+    }
+    if let Some(a) = actives
+        .iter()
+        .find(|a| a.bound_session.is_none() && cwd_ok(a.origin_cwd.as_deref(), cwd))
+    {
+        return Route::Record {
+            rec_id: a.rec_id.clone(),
+            bind: Some(sid.to_string()),
+        };
+    }
+    Route::Skip
+}
+
+/// Whether an event's `cwd` may bind a recording opened in `origin`. No origin (or no
+/// event cwd) means any directory is fine; otherwise the event must have happened at
+/// or under the origin, compared by path component.
+fn cwd_ok(origin: Option<&str>, cwd: Option<&str>) -> bool {
+    match (origin, cwd) {
+        (None, _) | (Some(_), None) => true,
+        (Some(origin), Some(cwd)) => path_within(cwd, origin),
     }
 }
 
@@ -624,9 +653,9 @@ mod tests {
         );
     }
 
-    fn active(origin: Option<&str>, bound: Option<&str>) -> ActiveRec {
+    fn mk(rec_id: &str, origin: Option<&str>, bound: Option<&str>) -> ActiveRec {
         ActiveRec {
-            rec_id: "01X".into(),
+            rec_id: rec_id.into(),
             name: "t".into(),
             started_at: "ts".into(),
             transcript_path: None,
@@ -635,58 +664,130 @@ mod tests {
         }
     }
 
-    #[test]
-    fn binds_to_the_first_session_under_origin() {
-        let a = active(Some("/proj/galdr"), None);
-        match capture_decision(&a, Some("sessA"), Some("/proj/galdr/sub")) {
-            Capture::RecordAndBind(s) => assert_eq!(s, "sessA"),
-            _ => panic!("should bind to sessA"),
+    /// Asserts the route records to `rec_id` and binds (or not) as expected.
+    fn assert_records(route: Route, rec_id: &str, bind: Option<&str>) {
+        match route {
+            Route::Record {
+                rec_id: got,
+                bind: got_bind,
+            } => {
+                assert_eq!(got, rec_id, "wrong recording");
+                assert_eq!(got_bind.as_deref(), bind, "wrong binding");
+            }
+            Route::Skip => panic!("expected a Record to {rec_id}, got Skip"),
         }
     }
 
     #[test]
+    fn binds_to_the_first_session_under_origin() {
+        let actives = [mk("01A", Some("/proj/galdr"), None)];
+        assert_records(
+            route_event(&actives, Some("sessA"), Some("/proj/galdr/sub")),
+            "01A",
+            Some("sessA"),
+        );
+    }
+
+    #[test]
     fn foreign_session_in_another_dir_is_skipped_before_binding() {
-        let a = active(Some("/proj/galdr"), None);
+        let actives = [mk("01A", Some("/proj/galdr"), None)];
         assert!(matches!(
-            capture_decision(&a, Some("sessB"), Some("/proj/eldr")),
-            Capture::Skip
+            route_event(&actives, Some("sessB"), Some("/proj/eldr")),
+            Route::Skip
         ));
     }
 
     #[test]
     fn once_bound_only_that_session_records() {
-        let a = active(Some("/proj/galdr"), Some("sessA"));
+        let actives = [mk("01A", Some("/proj/galdr"), Some("sessA"))];
+        // The bound session records without re-binding.
+        assert_records(
+            route_event(&actives, Some("sessA"), Some("/anywhere")),
+            "01A",
+            None,
+        );
+        // Another session cannot claim the already-bound recording.
         assert!(matches!(
-            capture_decision(&a, Some("sessA"), Some("/anywhere")),
-            Capture::Record
-        ));
-        assert!(matches!(
-            capture_decision(&a, Some("sessB"), Some("/proj/galdr")),
-            Capture::Skip
+            route_event(&actives, Some("sessB"), Some("/proj/galdr")),
+            Route::Skip
         ));
     }
 
     #[test]
-    fn sessionless_events_always_record() {
-        // Harnesses that omit session_id, and the no-scope tests, keep working.
-        let unbound = active(Some("/proj/galdr"), None);
-        assert!(matches!(
-            capture_decision(&unbound, None, Some("/tmp")),
-            Capture::Record
-        ));
-        let bound = active(Some("/proj/galdr"), Some("sessA"));
-        assert!(matches!(
-            capture_decision(&bound, None, None),
-            Capture::Record
-        ));
+    fn sessionless_events_record_to_the_newest_active() {
+        // Harnesses that omit session_id, and the single-recording case, keep working.
+        let unbound = [mk("01A", Some("/proj/galdr"), None)];
+        assert_records(route_event(&unbound, None, Some("/tmp")), "01A", None);
+        let bound = [mk("01A", Some("/proj/galdr"), Some("sessA"))];
+        assert_records(route_event(&bound, None, None), "01A", None);
+        // With several active, a session-less event goes to the newest (01C).
+        let many = [
+            mk("01C", None, None),
+            mk("01B", None, Some("sessB")),
+            mk("01A", None, None),
+        ];
+        assert_records(route_event(&many, None, None), "01C", None);
     }
 
     #[test]
     fn no_origin_binds_to_any_first_session() {
-        let a = active(None, None);
+        let actives = [mk("01A", None, None)];
+        assert_records(
+            route_event(&actives, Some("sessA"), Some("/anywhere")),
+            "01A",
+            Some("sessA"),
+        );
+    }
+
+    #[test]
+    fn routes_to_the_bound_recording_among_several() {
+        // Two recordings, each bound to a different session: each session's events go
+        // only to its own recording — no cross-contamination.
+        let actives = [
+            mk("01B", Some("/projB"), Some("sessB")),
+            mk("01A", Some("/projA"), Some("sessA")),
+        ];
+        assert_records(
+            route_event(&actives, Some("sessA"), Some("/projA")),
+            "01A",
+            None,
+        );
+        assert_records(
+            route_event(&actives, Some("sessB"), Some("/projB")),
+            "01B",
+            None,
+        );
+        // A third, unknown session with no unbound recording to claim is dropped.
         assert!(matches!(
-            capture_decision(&a, Some("sessA"), Some("/anywhere")),
-            Capture::RecordAndBind(_)
+            route_event(&actives, Some("sessC"), Some("/projC")),
+            Route::Skip
+        ));
+    }
+
+    #[test]
+    fn binds_the_most_recent_unbound_eligible_recording() {
+        // Newest-first. Two unbound recordings the session's cwd matches: the most
+        // recent (01C) is claimed; a same-cwd session then finds only 01B left.
+        let actives = [
+            mk("01C", Some("/proj"), None),
+            mk("01B", Some("/proj"), None),
+            mk("01A", Some("/other"), Some("old")),
+        ];
+        assert_records(
+            route_event(&actives, Some("sessNew"), Some("/proj/x")),
+            "01C",
+            Some("sessNew"),
+        );
+    }
+
+    #[test]
+    fn unbound_recording_in_another_dir_is_not_claimed() {
+        // The only unbound recording lives under a different origin: an event from
+        // elsewhere must not bind it (no stealing across directories).
+        let actives = [mk("01A", Some("/projA"), None)];
+        assert!(matches!(
+            route_event(&actives, Some("sessB"), Some("/projB")),
+            Route::Skip
         ));
     }
 

@@ -47,12 +47,21 @@ pub fn run() -> Result<()> {
         _ => warn("daemon is not running; CLI fallbacks will be used"),
     }
 
-    match record::read_active() {
-        Some(active) => ok(format!(
+    let actives = record::read_active_all();
+    match actives.as_slice() {
+        [] => ok("no active recording"),
+        [active] => ok(format!(
             "active recording: {} ({})",
             active.name, active.rec_id
         )),
-        None => ok("no active recording"),
+        many => ok(format!(
+            "{} active recordings: {}",
+            many.len(),
+            many.iter()
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
     }
 
     match catalog::open_in_memory_indexed() {

@@ -317,14 +317,22 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum RecAction {
-    /// Start a recording (optional name).
+    /// Start a recording (optional name). Several can run at once: each binds to the
+    /// session that first acts under its directory, so parallel agents record
+    /// independently. If your session already has a recording, a new one waits unbound
+    /// until the first stops.
     Start {
         /// Human-readable name for the recording.
         name: Option<String>,
     },
-    /// Stop the active recording.
-    Stop,
-    /// Show active recording status.
+    /// Stop an active recording. With no argument, stops the sole active recording (or
+    /// errors listing them if several are active); pass a name, rec_id, or unique
+    /// prefix to stop a specific one.
+    Stop {
+        /// Which recording to stop: a name, rec_id, or unique prefix.
+        reference: Option<String>,
+    },
+    /// Show every active recording (name, rec_id, steps, bound session or unbound).
     Status,
 }
 
@@ -515,7 +523,7 @@ fn main() {
         Commands::Rec { action } => {
             let result = match action {
                 RecAction::Start { name } => record::start(name),
-                RecAction::Stop => record::stop(),
+                RecAction::Stop { reference } => record::stop(reference.as_deref()),
                 RecAction::Status => cmd_rec_status(),
             };
             exit_on_error(result);
@@ -668,26 +676,32 @@ fn main() {
 }
 
 fn cmd_rec_status() -> anyhow::Result<()> {
-    let Some(active) = record::read_active() else {
+    let actives = record::read_active_all();
+    if actives.is_empty() {
         println!("no active recording");
         return Ok(());
-    };
-    let span_path = paths::span_file(&active.rec_id)?;
-    let steps = span::count_events(&span_path);
-    println!("active recording: {}", active.name);
-    println!("  rec_id: {}", active.rec_id);
-    println!("  started_at: {}", active.started_at);
-    println!("  steps: {steps}");
-    if let Some(origin) = &active.origin_cwd {
-        println!("  origin_cwd: {origin}");
     }
-    match &active.bound_session {
-        Some(session) => println!("  bound_session: {session}"),
-        None => println!("  bound_session: (unbound — first matching event will bind)"),
-    }
-    println!("  span: {}", span_path.display());
-    if let Some(transcript_path) = active.transcript_path {
-        println!("  transcript: {transcript_path}");
+    let n = actives.len();
+    println!("{n} active recording{}:", if n == 1 { "" } else { "s" });
+    for active in &actives {
+        let span_path = paths::span_file(&active.rec_id)?;
+        let steps = span::count_events(&span_path);
+        println!("  {} ({})", active.name, active.rec_id);
+        println!("    started_at: {}", active.started_at);
+        println!("    steps: {steps}");
+        if let Some(origin) = &active.origin_cwd {
+            println!("    origin_cwd: {origin}");
+        }
+        match &active.bound_session {
+            Some(session) => println!("    bound_session: {session}"),
+            None => println!(
+                "    bound_session: (unbound — waiting for the first activity of a session that has no recording yet)"
+            ),
+        }
+        println!("    span: {}", span_path.display());
+        if let Some(transcript_path) = &active.transcript_path {
+            println!("    transcript: {transcript_path}");
+        }
     }
     Ok(())
 }
@@ -1354,14 +1368,20 @@ fn cmd_overview() -> anyhow::Result<()> {
     );
     println!();
 
-    match record::read_active() {
-        Some(active) => println!(
+    match record::read_active_all().as_slice() {
+        [] => println!("  {}", style::dim("no active recording")),
+        [active] => println!(
             "  {} recording {}  {}",
             style::red("●"),
             style::bold(&format!("\"{}\"", active.name)),
             style::dim("— galdr rec stop when done")
         ),
-        None => println!("  {}", style::dim("no active recording")),
+        many => println!(
+            "  {} {} recordings active  {}",
+            style::red("●"),
+            style::bold(&many.len().to_string()),
+            style::dim("— galdr rec status")
+        ),
     }
     let recordings = record::all_recordings().len();
     let (skills, from_galdr) = skill_counts();

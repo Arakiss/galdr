@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! ~/.galdr/
-//! ├── active                 active-recording flag (JSON), absent = not recording
+//! ├── active                 legacy single active-recording flag (migrated on sight)
+//! ├── active.d/<rec_id>.json one file per concurrently-active recording
 //! ├── config.json            optional config (distill engine, endpoint, model)
 //! ├── galdrd.sock            daemon control socket (NDJSON over a Unix socket)
 //! ├── galdrd.pid             daemon pidfile
@@ -12,6 +13,11 @@
 //! ├── observe/               active browser-observe sessions and local sensor files
 //! └── recordings/<rec_id>.json   metadata written when a recording is closed
 //! ```
+//!
+//! Active recordings moved from a single `active` file to an `active.d/` directory
+//! with one JSON per recording, so several agent sessions can record at once (each
+//! span is scoped to the session bound to it). The old `active` file is migrated into
+//! `active.d/` the first time any command touches the active set.
 //!
 //! Distilled skills are written elsewhere, under `~/.agents/skills/<name>/`.
 //!
@@ -60,9 +66,21 @@ pub fn galdr_root() -> Result<PathBuf> {
     Ok(home()?.join(".galdr"))
 }
 
-/// Active-recording flag: `~/.galdr/active`.
-pub fn active_flag() -> Result<PathBuf> {
+/// Legacy single active-recording flag: `~/.galdr/active`. Kept only so it can be
+/// migrated into `active.d/` on sight; nothing writes here anymore.
+pub fn legacy_active_flag() -> Result<PathBuf> {
     Ok(galdr_root()?.join("active"))
+}
+
+/// Active-recordings directory: `~/.galdr/active.d`. One `<rec_id>.json` per
+/// concurrently-active recording, so parallel agent sessions can each record.
+pub fn active_dir() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("active.d"))
+}
+
+/// One active recording's flag file: `~/.galdr/active.d/<rec_id>.json`.
+pub fn active_file(rec_id: &str) -> Result<PathBuf> {
+    Ok(active_dir()?.join(format!("{rec_id}.json")))
 }
 
 /// Spans directory: `~/.galdr/spans`.
@@ -138,6 +156,7 @@ pub fn ensure_dirs() -> Result<()> {
     restrict_to_owner(&root);
     std::fs::create_dir_all(spans_dir()?)?;
     std::fs::create_dir_all(recordings_dir()?)?;
+    std::fs::create_dir_all(active_dir()?)?;
     std::fs::create_dir_all(outcomes_dir()?)?;
     std::fs::create_dir_all(observe_root()?)?;
     Ok(())

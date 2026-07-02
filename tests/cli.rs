@@ -71,12 +71,40 @@ impl Sandbox {
             .unwrap_or(0)
     }
 
-    /// The rec_id of the in-progress recording (read from the `active` flag,
-    /// since `recordings/` is only written on stop).
+    /// The rec_id of the sole in-progress recording (read from its `active.d/` flag,
+    /// since `recordings/` is only written on stop). Panics if not exactly one is
+    /// active — the callers all record a single recording.
     fn active_rec_id(&self) -> String {
-        let raw = std::fs::read_to_string(self.home().join(".galdr/active")).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        value["rec_id"].as_str().unwrap().to_string()
+        let dir = self.home().join(".galdr/active.d");
+        let mut ids: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+            .map(|e| {
+                let raw = std::fs::read_to_string(e.path()).unwrap();
+                let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+                value["rec_id"].as_str().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(ids.len(), 1, "expected exactly one active recording");
+        ids.pop().unwrap()
+    }
+
+    /// The rec_id of the active recording with the given name (for concurrency tests
+    /// where several recordings are active at once).
+    fn active_rec_id_by_name(&self, name: &str) -> String {
+        let dir = self.home().join(".galdr/active.d");
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            if entry.path().extension().and_then(|x| x.to_str()) != Some("json") {
+                continue;
+            }
+            let raw = std::fs::read_to_string(entry.path()).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            if value["name"].as_str() == Some(name) {
+                return value["rec_id"].as_str().unwrap().to_string();
+            }
+        }
+        panic!("no active recording named {name}");
     }
 
     fn recording_ids(&self) -> Vec<String> {
@@ -1758,13 +1786,29 @@ fn rec_control_rejects_double_start_and_orphan_stop() {
     assert!(status.status.success());
     assert!(stdout(&status).contains("no active recording"));
 
-    // First start succeeds; a second start while one is active is refused.
+    // Concurrent recordings are allowed now: a second start also succeeds.
     assert!(sb.run(&["rec", "start", "one"]).status.success());
-    let again = sb.run(&["rec", "start", "two"]);
-    assert!(!again.status.success());
-    assert!(stderr(&again).contains("already active"));
+    assert!(sb.run(&["rec", "start", "two"]).status.success());
+    let both = stdout(&sb.run(&["rec", "status"]));
+    assert!(both.contains("2 active recordings"), "{both}");
+    assert!(both.contains("one") && both.contains("two"), "{both}");
 
-    // Stop succeeds and a second stop is an orphan error again.
+    // A bare stop with several active is refused, listing which to name.
+    let ambiguous = sb.run(&["rec", "stop"]);
+    assert!(!ambiguous.status.success());
+    assert!(
+        stderr(&ambiguous).contains("specify which"),
+        "{}",
+        stderr(&ambiguous)
+    );
+
+    // Stop by name closes exactly that one; the other stays active.
+    assert!(sb.run(&["rec", "stop", "one"]).status.success());
+    let after = stdout(&sb.run(&["rec", "status"]));
+    assert!(after.contains("1 active recording"), "{after}");
+    assert!(after.contains("two"), "{after}");
+
+    // A bare stop now closes the sole remaining one; a further stop is an orphan error.
     assert!(sb.run(&["rec", "stop"]).status.success());
     assert!(!sb.run(&["rec", "stop"]).status.success());
 }
@@ -1889,8 +1933,9 @@ fn rec_status_and_capture_policy_work() {
     assert!(span.contains("galdr_truncated"));
 
     let status = stdout(&sb.run(&["rec", "status"]));
-    assert!(status.contains("active recording: capture"));
-    assert!(status.contains("steps: 1"));
+    assert!(status.contains("1 active recording"), "{status}");
+    assert!(status.contains("capture"), "{status}");
+    assert!(status.contains("steps: 1"), "{status}");
 }
 
 #[test]
@@ -2371,4 +2416,161 @@ fn daemon_install_is_macos_only() {
     let out = sb.run(&["daemon", "install"]);
     assert!(!out.status.success());
     assert!(stderr(&out).contains("macOS-only"), "{}", stderr(&out));
+}
+
+#[test]
+fn concurrent_recordings_bind_and_isolate_by_session() {
+    // The core of the concurrency feature: two agent sessions record at once, each
+    // span receives only its own session's steps, and stopping one leaves the other
+    // recording.
+    let sb = Sandbox::new();
+    for name in ["projA", "projB", "projC"] {
+        std::fs::create_dir_all(sb.home().join(name)).unwrap();
+    }
+    // Canonicalize so the event `cwd` matches `origin_cwd` exactly: on macOS the
+    // recording process's getcwd() resolves /var → /private/var, so an unresolved
+    // temp path would never be seen as "under" the origin.
+    let proj_a = std::fs::canonicalize(sb.home().join("projA")).unwrap();
+    let proj_b = std::fs::canonicalize(sb.home().join("projB")).unwrap();
+    let proj_c = std::fs::canonicalize(sb.home().join("projC")).unwrap();
+
+    // Start two recordings, each from its own directory (distinct origin_cwd).
+    assert!(
+        sb.cmd()
+            .current_dir(&proj_a)
+            .args(["rec", "start", "alpha"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        sb.cmd()
+            .current_dir(&proj_b)
+            .args(["rec", "start", "beta"])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // A PostToolUse event bound to a session under a working directory.
+    let event = |session: &str, cwd: &std::path::Path, cmd: &str| {
+        format!(
+            r#"{{"tool_name":"Bash","tool_input":{{"command":"{cmd}"}},"tool_response":{{}},"session_id":"{session}","cwd":"{}"}}"#,
+            cwd.display()
+        )
+    };
+
+    // sessA acts under projA → binds alpha; sessB under projB → binds beta. Interleaved.
+    assert!(
+        sb.hook(&event("sessA", &proj_a, "a-one"), false)
+            .status
+            .success()
+    );
+    assert!(
+        sb.hook(&event("sessB", &proj_b, "b-one"), false)
+            .status
+            .success()
+    );
+    assert!(
+        sb.hook(&event("sessB", &proj_b, "b-two"), false)
+            .status
+            .success()
+    );
+    assert!(
+        sb.hook(&event("sessA", &proj_a, "a-two"), false)
+            .status
+            .success()
+    );
+    // A third session with no free recording to claim is dropped.
+    assert!(
+        sb.hook(&event("sessC", &proj_c, "c-one"), false)
+            .status
+            .success()
+    );
+
+    let alpha = sb.active_rec_id_by_name("alpha");
+    let beta = sb.active_rec_id_by_name("beta");
+    assert_ne!(alpha, beta);
+
+    let span = |id: &str| {
+        std::fs::read_to_string(sb.home().join(".galdr/spans").join(format!("{id}.jsonl"))).unwrap()
+    };
+    // Each span holds only its own session's steps.
+    let a = span(&alpha);
+    assert!(
+        a.contains("a-one") && a.contains("a-two"),
+        "alpha span: {a}"
+    );
+    assert!(
+        !a.contains("b-one") && !a.contains("b-two") && !a.contains("c-one"),
+        "alpha span leaked another session: {a}"
+    );
+    let b = span(&beta);
+    assert!(b.contains("b-one") && b.contains("b-two"), "beta span: {b}");
+    assert!(
+        !b.contains("a-one") && !b.contains("c-one"),
+        "beta span leaked another session: {b}"
+    );
+    assert_eq!(
+        sb.span_lines(&alpha),
+        2,
+        "alpha recorded exactly its 2 steps"
+    );
+    assert_eq!(sb.span_lines(&beta), 2, "beta recorded exactly its 2 steps");
+
+    // Stop alpha by name; beta keeps recording untouched.
+    assert!(sb.run(&["rec", "stop", "alpha"]).status.success());
+    let status = stdout(&sb.run(&["rec", "status"]));
+    assert!(status.contains("1 active recording"), "{status}");
+    assert!(status.contains("beta"), "{status}");
+    // A further event from sessB still lands in beta.
+    assert!(
+        sb.hook(&event("sessB", &proj_b, "b-three"), false)
+            .status
+            .success()
+    );
+    assert_eq!(
+        sb.span_lines(&beta),
+        3,
+        "beta kept recording after alpha stopped"
+    );
+    // alpha closed cleanly with its 2 steps.
+    let list = stdout(&sb.run(&["list"]));
+    assert!(
+        list.contains("alpha"),
+        "alpha should be a closed recording: {list}"
+    );
+}
+
+#[test]
+fn legacy_active_flag_is_migrated_without_losing_the_recording() {
+    // An in-progress recording written under the old single ~/.galdr/active must
+    // survive the upgrade: it is folded into active.d/ and keeps recording.
+    let sb = Sandbox::new();
+    std::fs::create_dir_all(sb.home().join(".galdr")).unwrap();
+    std::fs::write(
+        sb.home().join(".galdr/active"),
+        r#"{"rec_id":"01LEGACY0000000000000000AA","name":"legacy-run","started_at":"2026-07-02T00:00:00Z","origin_cwd":null,"bound_session":null}"#,
+    )
+    .unwrap();
+
+    // Any command that touches the active set migrates it.
+    let status = stdout(&sb.run(&["rec", "status"]));
+    assert!(status.contains("legacy-run"), "{status}");
+    assert!(status.contains("01LEGACY0000000000000000AA"), "{status}");
+    // The legacy file is gone and the new per-recording flag exists.
+    assert!(
+        !sb.home().join(".galdr/active").exists(),
+        "legacy flag must be removed"
+    );
+    assert!(
+        sb.home()
+            .join(".galdr/active.d/01LEGACY0000000000000000AA.json")
+            .exists(),
+        "recording must be folded into active.d/"
+    );
+    // It still records (sessionless event lands in it) and stops cleanly.
+    assert!(sb.hook(BASH_STATUS, false).status.success());
+    assert_eq!(sb.span_lines("01LEGACY0000000000000000AA"), 1);
+    assert!(sb.run(&["rec", "stop", "legacy-run"]).status.success());
 }

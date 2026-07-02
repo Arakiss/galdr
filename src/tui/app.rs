@@ -660,17 +660,24 @@ impl<C: Catalog> App<C> {
         }
     }
 
-    /// Re-reads the active-recording flag (called from the event loop) so the title
-    /// REC badge stays live.
+    /// Re-reads the active recordings (called from the event loop) so the title REC
+    /// badge stays live. With several active, it shows the newest plus a count.
+    // TODO(tui): a fuller multi-recording view (per-recording REC rows) is worthwhile
+    // once the TUI grows a recordings-in-progress pane; today the badge is a summary.
     pub fn refresh_active(&mut self) {
-        match record::read_active() {
-            Some(active) => {
-                self.recording_active = true;
-                self.active_name = Some(active.name);
-            }
-            None => {
+        let actives = record::read_active_all();
+        match actives.as_slice() {
+            [] => {
                 self.recording_active = false;
                 self.active_name = None;
+            }
+            [active] => {
+                self.recording_active = true;
+                self.active_name = Some(active.name.clone());
+            }
+            many => {
+                self.recording_active = true;
+                self.active_name = Some(format!("{} (+{} more)", many[0].name, many.len() - 1));
             }
         }
     }
