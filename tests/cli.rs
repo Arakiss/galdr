@@ -124,6 +124,22 @@ impl Sandbox {
     }
 }
 
+/// Writes a crates.io sparse-index fixture (one NDJSON line per entry) and returns
+/// its path, for driving `galdr upgrade`/`doctor` hermetically via `GALDR_INDEX_FILE`
+/// — no network, deterministic across machines.
+fn write_index_fixture(sb: &Sandbox, entries: &[(&str, bool)]) -> PathBuf {
+    let path = sb.home().join("index.json");
+    let mut body = String::new();
+    for (vers, yanked) in entries {
+        body.push_str(&format!(
+            r#"{{"name":"galdr","vers":"{vers}","deps":[],"cksum":"x","features":{{}},"yanked":{yanked}}}"#
+        ));
+        body.push('\n');
+    }
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -2070,6 +2086,104 @@ fn doctor_passes_when_claude_hook_is_configured() {
         String::from_utf8_lossy(&doctor.stderr)
     );
     assert!(stdout(&doctor).contains("doctor: ok"));
+}
+
+#[test]
+fn upgrade_check_reports_up_to_date() {
+    let sb = Sandbox::new();
+    let index = write_index_fixture(
+        &sb,
+        &[("0.14.0", false), (env!("CARGO_PKG_VERSION"), false)],
+    );
+    let out = sb
+        .cmd()
+        .env("GALDR_INDEX_FILE", &index)
+        .args(["upgrade", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).contains("is up to date"), "{}", stdout(&out));
+}
+
+#[test]
+fn upgrade_check_flags_a_newer_version_with_exit_10() {
+    // A published version greater than this build: --check names it, points at the
+    // command, and exits 10 — a distinct signal a script can branch on.
+    let sb = Sandbox::new();
+    let index = write_index_fixture(&sb, &[(env!("CARGO_PKG_VERSION"), false), ("9.9.9", false)]);
+    let out = sb
+        .cmd()
+        .env("GALDR_INDEX_FILE", &index)
+        .args(["upgrade", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(10), "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(said.contains("9.9.9"), "{said}");
+    assert!(said.contains("galdr upgrade"), "{said}");
+}
+
+#[test]
+fn upgrade_check_ignores_a_yanked_newer_version() {
+    // The only newer version is yanked, so the live max equals this build: up to date.
+    let sb = Sandbox::new();
+    let index = write_index_fixture(&sb, &[(env!("CARGO_PKG_VERSION"), false), ("9.9.9", true)]);
+    let out = sb
+        .cmd()
+        .env("GALDR_INDEX_FILE", &index)
+        .args(["upgrade", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).contains("is up to date"), "{}", stdout(&out));
+}
+
+#[test]
+fn upgrade_check_reports_local_ahead() {
+    // The published max is behind this build — the normal state when running from a
+    // clone whose version bump has not shipped yet. Not an update, exit 0.
+    let sb = Sandbox::new();
+    let index = write_index_fixture(&sb, &[("0.0.1", false)]);
+    let out = sb
+        .cmd()
+        .env("GALDR_INDEX_FILE", &index)
+        .args(["upgrade", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(said.contains("ahead of crates.io"), "{said}");
+    assert!(said.contains("v0.0.1"), "{said}");
+}
+
+#[test]
+fn upgrade_check_is_soft_when_offline() {
+    // A missing index fixture stands in for "no network": a note, exit 0 — never an
+    // error. galdr's local-first contract makes offline a note, not a failure.
+    let sb = Sandbox::new();
+    let missing = sb.home().join("no-such-index.json");
+    let out = sb
+        .cmd()
+        .env("GALDR_INDEX_FILE", &missing)
+        .args(["upgrade", "--check"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).contains("offline"), "{}", stdout(&out));
+}
+
+#[test]
+fn upgrade_rejects_an_invalid_from() {
+    // A malformed `--from` is a usage error (exit 1) and never reaches the network.
+    let sb = Sandbox::new();
+    let out = sb
+        .cmd()
+        .env("GALDR_INDEX_FILE", sb.home().join("unused.json"))
+        .args(["upgrade", "--check", "--from", "bogus"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--from"), "{}", stderr(&out));
 }
 
 /// Optional daemon round-trip. Kept robust (generous polling, guaranteed

@@ -31,6 +31,7 @@ mod style;
 mod suggest;
 mod summary;
 mod tui;
+mod upgrade;
 mod validate;
 
 use std::path::{Path, PathBuf};
@@ -222,6 +223,24 @@ enum Commands {
 
     /// Diagnose local galdr installation, catalog, config, and hook wiring.
     Doctor,
+
+    /// Check for and install a newer galdr from crates.io.
+    ///
+    /// The only time galdr reaches the network on its own is when you ask it to: this
+    /// command (and `doctor`) query the crates.io index with a short timeout and fail
+    /// soft — no connection is a note, never an error. `--check` only reports (exit 10
+    /// if a newer version exists, for scripts); without it, a newer version is fetched
+    /// and installed with `cargo install`, then a stale daemon is restarted.
+    Upgrade {
+        /// Only report whether a newer version exists; install nothing. Exit 10 when an
+        /// update is available, 0 when up to date, local-ahead, or offline.
+        #[arg(long)]
+        check: bool,
+        /// Install source: `crates` (default) or `path <dir>` to install from a local
+        /// clone with `cargo install --path <dir>`.
+        #[arg(long, num_args = 1..=2, value_names = ["SOURCE", "DIR"])]
+        from: Option<Vec<String>>,
+    },
 
     /// Print or check harness setup snippets.
     Setup {
@@ -577,6 +596,13 @@ fn main() {
             json,
         )),
         Commands::Doctor => exit_on_error(doctor::run()),
+        Commands::Upgrade { check, from } => match upgrade::run(check, from) {
+            Ok(code) => std::process::exit(code),
+            Err(err) => {
+                eprintln!("error: {err:#}");
+                std::process::exit(1);
+            }
+        },
         Commands::Setup { target } => match target {
             SetupTarget::Claude { check, print } => {
                 if print {
