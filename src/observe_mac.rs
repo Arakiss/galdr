@@ -67,36 +67,55 @@ struct MacWireEvent {
     /// Scroll delta (vertical) for scroll events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scroll_delta: Option<i64>,
+    /// Accessibility role of the element under the cursor at click time, e.g.
+    /// `AXButton` (phase 2). Absent when the target app exposes no AX tree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    /// Accessibility title/description of that element, e.g. the button's label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    /// Title of the window the element belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window: Option<String>,
+    /// Owning application name, resolved from the element's pid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app: Option<String>,
 }
 
 /// Maps a wire event into a typed human span [`Event`]. Pure and total: it never fails,
 /// so a malformed capture degrades to a bare action rather than dropping the step.
 fn mac_wire_to_event(seq: u64, wire: MacWireEvent) -> Event {
     let source = HumanSource::MacApp {
-        app: None,
-        window_title: None,
+        app: wire.app.clone(),
+        window_title: wire.window.clone(),
     };
 
-    // Coordinates travel as an element summary for now (debug metadata), never as the
-    // primary locator: a skill that targets "the Save button" survives a resize; one
-    // that targets (x, y) does not. The semantic locator lands with AX context.
+    // Coordinates travel as an element summary — debug metadata, never the primary
+    // locator: a skill that targets "the Save button" survives a resize; one that
+    // targets (x, y) does not.
     let coord_summary = match (wire.x, wire.y) {
         (Some(x), Some(y)) => Some(format!("screen ({x:.0}, {y:.0})")),
         _ => None,
     };
-    let target = coord_summary.map(|summary| HumanTarget {
-        primary: TargetLocator::Role {
-            role: "AXUnknown".to_string(),
-            name: None,
-        },
-        alternates: Vec::new(),
-        role: None,
-        name: None,
-        text: None,
-        label: None,
-        placeholder: None,
-        element_summary: Some(summary),
-    });
+    // Build a semantic target when we resolved the accessibility role of the clicked
+    // element; otherwise fall back to a coordinate-only target so the step is not lost.
+    let target = if wire.role.is_some() || coord_summary.is_some() {
+        Some(HumanTarget {
+            primary: TargetLocator::Role {
+                role: wire.role.clone().unwrap_or_else(|| "AXUnknown".to_string()),
+                name: wire.name.clone(),
+            },
+            alternates: Vec::new(),
+            role: wire.role.clone(),
+            name: wire.name.clone(),
+            text: None,
+            label: None,
+            placeholder: None,
+            element_summary: coord_summary,
+        })
+    } else {
+        None
+    };
 
     // Keystrokes record the fact of a key press, never the character: the value is
     // omitted by policy, so the raw span holds no typed content to leak.
@@ -401,14 +420,18 @@ unsafe extern "C" {
 
 #[cfg(target_os = "macos")]
 mod sensor {
-    use std::ffi::c_void;
+    use std::ffi::{CStr, c_char, c_float, c_void};
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::path::Path;
     use std::ptr::NonNull;
+    use std::sync::mpsc::{self, Receiver, Sender};
 
     use anyhow::{Context, Result, bail};
-    use objc2_core_foundation::{CFMachPort, CFRetained, CFRunLoop, Type, kCFRunLoopCommonModes};
+    use objc2_application_services::{AXError, AXUIElement};
+    use objc2_core_foundation::{
+        CFMachPort, CFRetained, CFRunLoop, CFString, CFType, Type, kCFRunLoopCommonModes,
+    };
     use objc2_core_graphics::{
         CGEvent, CGEventField, CGEventMask, CGEventTapLocation, CGEventTapOptions,
         CGEventTapPlacement, CGEventTapProxy, CGEventType, CGPreflightListenEventAccess,
@@ -417,10 +440,28 @@ mod sensor {
 
     use crate::record;
 
+    /// AX messaging timeout for the sensor's queries (seconds). Kept well under the 6s
+    /// default so a slow or unresponsive app never stalls context resolution.
+    const AX_TIMEOUT_SECS: c_float = 0.12;
+
+    /// A raw observed hit, sent from the tap callback to the resolver thread. Building it
+    /// is the only work the callback does; the (slow, cross-process) AX resolution runs
+    /// off the tap thread so a slow app can never stall — and thus disable — the tap.
+    struct RawHit {
+        ts: String,
+        action: &'static str,
+        x: f64,
+        y: f64,
+        button: Option<i64>,
+        keycode: Option<i64>,
+        scroll_delta: Option<i64>,
+        /// Resolve the accessibility context under (x, y)? True only for clicks.
+        resolve_ax: bool,
+    }
+
     /// State handed to the C event-tap callback through `user_info`.
     struct SensorCtx {
-        log: std::fs::File,
-        seq: u64,
+        tx: Sender<RawHit>,
         /// The tap's mach port, so the callback can re-enable it after the system
         /// disables it on a timeout. Raw because the callback reconstructs `&mut Ctx`.
         tap: *const CFMachPort,
@@ -470,69 +511,70 @@ mod sensor {
             return event.as_ptr();
         }
 
-        if let Some(wire) = describe(etype, ev)
-            && let Ok(line) = serde_json::to_string(&wire)
-            && writeln!(ctx.log, "{line}").is_ok()
-        {
-            ctx.seq += 1;
-            let _ = ctx.log.flush();
+        // Minimal hot-path work: read the cheap in-process fields and hand the hit to the
+        // resolver thread. No AX call here — that IPC belongs off the tap thread.
+        if let Some(hit) = describe(etype, ev) {
+            let _ = ctx.tx.send(hit);
         }
 
         // Listen-only: the return is ignored, but the contract is to pass the event on.
         event.as_ptr()
     }
 
-    /// Build a wire event from one observed CGEvent, or `None` for events we ignore.
-    /// Serialized through serde so the sensor never hand-rolls JSON.
-    fn describe(etype: CGEventType, ev: &CGEvent) -> Option<super::MacWireEvent> {
+    /// Build a raw hit from one observed CGEvent, or `None` for events we ignore.
+    fn describe(etype: CGEventType, ev: &CGEvent) -> Option<RawHit> {
         let point = CGEvent::location(Some(ev));
-        let ts = record::now_rfc3339();
-        let mut wire = super::MacWireEvent {
-            ts,
-            action: String::new(),
-            x: Some(point.x),
-            y: Some(point.y),
+        let mut hit = RawHit {
+            ts: record::now_rfc3339(),
+            action: "",
+            x: point.x,
+            y: point.y,
             button: None,
             keycode: None,
             scroll_delta: None,
+            resolve_ax: false,
         };
 
         match etype {
             CGEventType::LeftMouseDown => {
-                wire.action = "human.mac.click".into();
-                wire.button = Some(0);
+                hit.action = "human.mac.click";
+                hit.button = Some(0);
+                hit.resolve_ax = true;
             }
             CGEventType::RightMouseDown => {
-                wire.action = "human.mac.click".into();
-                wire.button = Some(1);
+                hit.action = "human.mac.click";
+                hit.button = Some(1);
+                hit.resolve_ax = true;
             }
             CGEventType::OtherMouseDown => {
-                wire.action = "human.mac.click".into();
-                wire.button = Some(CGEvent::integer_value_field(
+                hit.action = "human.mac.click";
+                hit.button = Some(CGEvent::integer_value_field(
                     Some(ev),
                     CGEventField::MouseEventButtonNumber,
                 ));
+                hit.resolve_ax = true;
             }
             CGEventType::KeyDown => {
-                wire.action = "human.mac.key".into();
-                wire.keycode = Some(CGEvent::integer_value_field(
+                hit.action = "human.mac.key";
+                hit.keycode = Some(CGEvent::integer_value_field(
                     Some(ev),
                     CGEventField::KeyboardEventKeycode,
                 ));
             }
             CGEventType::ScrollWheel => {
-                wire.action = "human.mac.scroll".into();
-                wire.scroll_delta = Some(CGEvent::integer_value_field(
+                hit.action = "human.mac.scroll";
+                hit.scroll_delta = Some(CGEvent::integer_value_field(
                     Some(ev),
                     CGEventField::ScrollWheelEventDeltaAxis1,
                 ));
             }
             _ => return None,
         }
-        Some(wire)
+        Some(hit)
     }
 
-    /// Install the tap and run its loop until the stop flag appears.
+    /// Install the tap and run its loop until the stop flag appears. AX resolution runs
+    /// on a separate thread fed by the callback, so the tap thread stays fast.
     pub fn run(events_file: &Path, stop_flag: &Path, log_file: &Path) -> Result<()> {
         let log = OpenOptions::new()
             .create(true)
@@ -540,9 +582,11 @@ mod sensor {
             .open(events_file)
             .with_context(|| format!("could not open events file {}", events_file.display()))?;
 
+        let (tx, rx) = mpsc::channel::<RawHit>();
+        let resolver = std::thread::spawn(move || resolve_loop(rx, log));
+
         let mut ctx = Box::new(SensorCtx {
-            log,
-            seq: 0,
+            tx,
             tap: std::ptr::null(),
         });
 
@@ -590,7 +634,149 @@ mod sensor {
         spawn_watcher(stop_flag.to_path_buf(), &run_loop, &tap);
 
         CFRunLoop::run();
+
+        // The run loop has stopped: drop the ctx (and its sender) so the resolver drains
+        // the remaining hits and exits, then join it so every event is flushed to disk
+        // before `run` returns and the process exits.
+        drop(ctx);
+        let _ = resolver.join();
         Ok(())
+    }
+
+    /// The AX-resolution loop: for each hit, enrich clicks with the accessibility context
+    /// under the cursor, then serialize the wire event to disk. Runs off the tap thread.
+    fn resolve_loop(rx: Receiver<RawHit>, mut log: std::fs::File) {
+        // The system-wide element is created and used only on this thread (AXUIElement is
+        // not thread-safe). Lowering its messaging timeout is process-global for us.
+        let system = unsafe { AXUIElement::new_system_wide() };
+        unsafe {
+            let _ = system.set_messaging_timeout(AX_TIMEOUT_SECS);
+        }
+
+        for hit in rx {
+            let mut wire = super::MacWireEvent {
+                ts: hit.ts,
+                action: hit.action.to_string(),
+                x: Some(hit.x),
+                y: Some(hit.y),
+                button: hit.button,
+                keycode: hit.keycode,
+                scroll_delta: hit.scroll_delta,
+                role: None,
+                name: None,
+                window: None,
+                app: None,
+            };
+            if hit.resolve_ax
+                && let Some(cx) = unsafe { resolve_ax(&system, hit.x, hit.y) }
+            {
+                wire.role = cx.role;
+                wire.name = cx.name;
+                wire.window = cx.window;
+                wire.app = cx.app;
+            }
+            if let Ok(line) = serde_json::to_string(&wire)
+                && writeln!(log, "{line}").is_ok()
+            {
+                let _ = log.flush();
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct AxContext {
+        role: Option<String>,
+        name: Option<String>,
+        window: Option<String>,
+        app: Option<String>,
+    }
+
+    /// Resolve the accessibility context of the element at screen coordinates (x, y).
+    /// Coordinates are top-left origin, which is what both CGEvent and AX use — no flip.
+    /// Best-effort: any failed query leaves that field `None` rather than dropping the step.
+    ///
+    /// # Safety
+    /// `system` must be the system-wide AX element, used only on this thread.
+    unsafe fn resolve_ax(system: &AXUIElement, x: f64, y: f64) -> Option<AxContext> {
+        let mut el_ptr: *const AXUIElement = std::ptr::null();
+        let err = unsafe {
+            system.copy_element_at_position(x as c_float, y as c_float, NonNull::from(&mut el_ptr))
+        };
+        if err != AXError::Success {
+            return None;
+        }
+        // SAFETY: on Success the out-param is a +1 retained AX element we now own.
+        let el = unsafe { CFRetained::from_raw(NonNull::new(el_ptr as *mut AXUIElement)?) };
+
+        let mut cx = AxContext {
+            role: unsafe { copy_string_attr(&el, "AXRole") },
+            name: unsafe { copy_string_attr(&el, "AXTitle") }
+                .or_else(|| unsafe { copy_string_attr(&el, "AXDescription") }),
+            ..Default::default()
+        };
+        if let Some(window) = unsafe { copy_element_attr(&el, "AXWindow") } {
+            cx.window = unsafe { copy_string_attr(&window, "AXTitle") };
+        }
+        let mut pid: i32 = 0;
+        if unsafe { el.pid(NonNull::from(&mut pid)) } == AXError::Success && pid > 0 {
+            cx.app = app_name_for_pid(pid);
+        }
+        Some(cx)
+    }
+
+    /// Read a string-valued AX attribute (e.g. `"AXRole"`). The attribute-name strings are
+    /// the stable public constant values (`kAXRoleAttribute == "AXRole"`); objc2 does not
+    /// bind the CFString constants, so we spell them.
+    ///
+    /// # Safety
+    /// `el` must be a live AX element used only on the resolver thread.
+    unsafe fn copy_string_attr(el: &AXUIElement, attribute: &str) -> Option<String> {
+        let attr = CFString::from_str(attribute);
+        let mut value: *const CFType = std::ptr::null();
+        let err = unsafe { el.copy_attribute_value(&attr, NonNull::from(&mut value)) };
+        if err != AXError::Success {
+            return None;
+        }
+        // SAFETY: on Success the out-param is a +1 retained CF value we now own.
+        let value = unsafe { CFRetained::from_raw(NonNull::new(value as *mut CFType)?) };
+        let s = value.downcast_ref::<CFString>()?;
+        Some(s.to_string())
+    }
+
+    /// Read an AX attribute whose value is itself an AX element (e.g. `"AXWindow"`).
+    ///
+    /// # Safety
+    /// `el` must be a live AX element used only on the resolver thread.
+    unsafe fn copy_element_attr(
+        el: &AXUIElement,
+        attribute: &str,
+    ) -> Option<CFRetained<AXUIElement>> {
+        let attr = CFString::from_str(attribute);
+        let mut value: *const CFType = std::ptr::null();
+        let err = unsafe { el.copy_attribute_value(&attr, NonNull::from(&mut value)) };
+        if err != AXError::Success {
+            return None;
+        }
+        // SAFETY: on Success the out-param is a +1 retained AX element we now own.
+        let value = unsafe { CFRetained::from_raw(NonNull::new(value as *mut CFType)?) };
+        value.downcast::<AXUIElement>().ok()
+    }
+
+    /// Resolve a process name from its pid via `proc_name` (libproc, part of libSystem).
+    fn app_name_for_pid(pid: i32) -> Option<String> {
+        // `proc_name` copies the last path component of the executable, NUL-terminated.
+        unsafe extern "C" {
+            fn proc_name(pid: i32, buffer: *mut c_char, buffersize: u32) -> i32;
+        }
+        let mut buf = [0u8; 256];
+        let n = unsafe { proc_name(pid, buf.as_mut_ptr() as *mut c_char, buf.len() as u32) };
+        if n <= 0 {
+            return None;
+        }
+        CStr::from_bytes_until_nul(&buf)
+            .ok()
+            .and_then(|c| c.to_str().ok())
+            .map(str::to_string)
     }
 
     /// Watch, on a helper thread: stop the (thread-bound) run loop when the stop flag
@@ -655,17 +841,26 @@ mod sensor {
 mod tests {
     use super::*;
 
-    #[test]
-    fn wire_click_maps_to_human_click() {
-        let wire = MacWireEvent {
+    fn sample_wire(action: &str) -> MacWireEvent {
+        MacWireEvent {
             ts: "2026-07-02T00:00:00Z".into(),
-            action: "human.mac.click".into(),
+            action: action.into(),
             x: Some(120.0),
             y: Some(48.0),
-            button: Some(0),
+            button: None,
             keycode: None,
             scroll_delta: None,
-        };
+            role: None,
+            name: None,
+            window: None,
+            app: None,
+        }
+    }
+
+    #[test]
+    fn wire_click_maps_to_human_click() {
+        let mut wire = sample_wire("human.mac.click");
+        wire.button = Some(0);
         let event = mac_wire_to_event(0, wire);
         assert_eq!(event.event_kind, EventKind::Human);
         assert_eq!(event.tool_name, "human.mac.click");
@@ -679,16 +874,40 @@ mod tests {
     }
 
     #[test]
+    fn wire_click_with_ax_builds_semantic_target() {
+        let mut wire = sample_wire("human.mac.click");
+        wire.role = Some("AXButton".into());
+        wire.name = Some("Enviar".into());
+        wire.window = Some("Gastos".into());
+        wire.app = Some("Contsimple".into());
+        let event = mac_wire_to_event(0, wire);
+        let human = event.human.expect("human payload");
+        // The app and window ride on the source; the role/name become the locator.
+        match human.source {
+            HumanSource::MacApp { app, window_title } => {
+                assert_eq!(app.as_deref(), Some("Contsimple"));
+                assert_eq!(window_title.as_deref(), Some("Gastos"));
+            }
+            other => panic!("expected MacApp source, got {other:?}"),
+        }
+        let target = human.target.expect("semantic target");
+        assert_eq!(target.role.as_deref(), Some("AXButton"));
+        assert_eq!(target.name.as_deref(), Some("Enviar"));
+        match target.primary {
+            TargetLocator::Role { role, name } => {
+                assert_eq!(role, "AXButton");
+                assert_eq!(name.as_deref(), Some("Enviar"));
+            }
+            other => panic!("expected a role locator, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn wire_key_omits_content() {
-        let wire = MacWireEvent {
-            ts: "2026-07-02T00:00:00Z".into(),
-            action: "human.mac.key".into(),
-            x: None,
-            y: None,
-            button: None,
-            keycode: Some(9),
-            scroll_delta: None,
-        };
+        let mut wire = sample_wire("human.mac.key");
+        wire.x = None;
+        wire.y = None;
+        wire.keycode = Some(9);
         let event = mac_wire_to_event(3, wire);
         assert_eq!(event.seq, 3);
         let human = event.human.expect("human payload");
@@ -701,15 +920,9 @@ mod tests {
 
     #[test]
     fn wire_event_ndjson_roundtrips() {
-        let wire = MacWireEvent {
-            ts: "2026-07-02T00:00:00Z".into(),
-            action: "human.mac.scroll".into(),
-            x: Some(10.0),
-            y: Some(20.0),
-            button: None,
-            keycode: None,
-            scroll_delta: Some(-3),
-        };
+        let mut wire = sample_wire("human.mac.scroll");
+        wire.scroll_delta = Some(-3);
+        wire.role = Some("AXScrollArea".into());
         let line = serde_json::to_string(&wire).unwrap();
         let back: MacWireEvent = serde_json::from_str(&line).unwrap();
         assert_eq!(wire, back);
