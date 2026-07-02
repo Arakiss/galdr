@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, Wrap};
 
 use super::app::{App, Overlay, Panel};
 use super::data::Catalog;
@@ -31,17 +31,24 @@ pub fn render<C: Catalog>(frame: &mut Frame, app: &mut App<C>) {
     }
 }
 
-/// The tab bar, eldr-style: each tab numbered, the active one bracketed and accented.
+/// The tab bar: each tab numbered, the active one a filled accent pill; the rest dim.
 fn render_tabbar<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
-    let mut spans = Vec::new();
+    let mut spans = vec![Span::raw(" ")];
     for (i, tab) in Panel::ALL.iter().enumerate() {
-        let label = format!("{} {}", i + 1, tab.label());
-        if *tab == app.focus {
-            spans.push(Span::styled(format!(" {label} "), theme::tab_active()));
+        let active = *tab == app.focus;
+        let num_style = if active {
+            theme::tab_active()
         } else {
-            spans.push(Span::styled(format!(" {label} "), theme::dim()));
-        }
-        spans.push(Span::raw(" "));
+            theme::faint()
+        };
+        let label_style = if active {
+            theme::tab_active()
+        } else {
+            theme::dim()
+        };
+        spans.push(Span::styled(format!(" {} ", i + 1), num_style));
+        spans.push(Span::styled(format!("{} ", tab.label()), label_style));
+        spans.push(Span::raw("  "));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -84,6 +91,7 @@ fn block_focused(title: &str, focused: bool) -> Block<'static> {
         .borders(Borders::ALL)
         .border_type(theme::BORDER)
         .border_style(border)
+        .padding(Padding::horizontal(1))
         .title(Span::styled(format!(" {title} "), theme::title()))
 }
 
@@ -164,32 +172,37 @@ fn block(title: &str) -> Block<'static> {
         .borders(Borders::ALL)
         .border_type(theme::BORDER)
         .border_style(theme::faint())
+        .padding(Padding::horizontal(1))
         .title(Span::styled(format!(" {title} "), theme::title()))
 }
 
 fn render_title<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
+    let sep = || Span::styled("  ·  ", theme::faint());
     let left = Line::from(vec![
+        Span::raw(" "),
+        Span::styled("✦ galdr", theme::title()),
+        Span::styled(concat!(" ", env!("CARGO_PKG_VERSION")), theme::faint()),
+        sep(),
+        Span::styled(format!("{}", app.recordings.len()), theme::text()),
+        Span::styled(" recordings", theme::dim()),
+        sep(),
+        Span::styled(format!("{}", app.galdr_skill_count()), theme::ok()),
+        Span::styled(" skills", theme::dim()),
         Span::styled(
-            concat!("✦ galdr v", env!("CARGO_PKG_VERSION")),
-            theme::title(),
-        ),
-        Span::styled(
-            format!(
-                "   ·   {} recordings   ·   {} galdr · {} ext skills",
-                app.recordings.len(),
-                app.galdr_skill_count(),
-                app.external_skill_count()
-            ),
-            theme::dim(),
+            format!("  +{} ext", app.external_skill_count()),
+            theme::faint(),
         ),
     ]);
     let right = if app.recording_active {
-        Line::from(Span::styled(
-            format!("● REC {} ", app.active_name.as_deref().unwrap_or("")),
-            theme::warn(),
-        ))
+        Line::from(vec![
+            Span::styled("● REC ", theme::warn()),
+            Span::styled(
+                format!("{} ", app.active_name.as_deref().unwrap_or("")),
+                theme::text(),
+            ),
+        ])
     } else {
-        Line::from(Span::styled("● idle ", theme::dim()))
+        Line::from(Span::styled("○ idle ", theme::faint()))
     };
     let cols =
         Layout::horizontal([Constraint::Percentage(62), Constraint::Percentage(38)]).split(area);
@@ -198,129 +211,169 @@ fn render_title<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
 }
 
 /// The Overview tab: a dashboard of what galdr has and what needs attention, so a human
-/// opening the TUI is oriented at a glance before drilling into any list.
+/// opening the TUI is oriented at a glance before drilling into any list. Laid out as a
+/// row of stat cards, then two columns (recent recordings · your skills), then a strip of
+/// harness wiring — so the space reads as a designed dashboard, not a flat list.
 fn render_overview<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
-    let mut lines: Vec<Line> = Vec::new();
+    let rows = Layout::vertical([
+        Constraint::Length(5), // stat cards
+        Constraint::Min(4),    // two lists
+        Constraint::Length(3), // harness strip
+    ])
+    .split(area);
 
-    // The surfaced insight line: what is actionable right now (eldr's ⚠ line).
-    let drafts = app.draft_count();
-    let undistilled = app.undistilled_count();
-    if drafts > 0 || undistilled > 0 {
-        let mut parts = Vec::new();
-        if drafts > 0 {
-            parts.push(format!("{drafts} skill(s) await authoring"));
-        }
-        if undistilled > 0 {
-            parts.push(format!("{undistilled} recording(s) not yet a skill"));
-        }
-        lines.push(Line::styled(
-            format!("⚠ {}", parts.join("   ·   ")),
-            theme::warn(),
-        ));
-    } else {
-        lines.push(Line::styled(
-            "✓ every recording distilled and authored",
-            theme::ok(),
-        ));
-    }
-    lines.push(Line::raw(""));
-
-    // Big-number stats.
+    // ── stat cards ──────────────────────────────────────────────────────────────
+    let cards = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(rows[0]);
     let ready = app
         .avg_readiness()
         .map(|r| r.to_string())
         .unwrap_or_else(|| "—".into());
-    lines.push(Line::from(vec![
-        Span::styled("SKILLS ", theme::dim()),
-        Span::styled(app.skills.len().to_string(), theme::title()),
-        Span::styled(
-            format!(
-                "  {} galdr · {} ext",
-                app.galdr_skill_count(),
-                app.external_skill_count()
-            ),
-            theme::dim(),
-        ),
-        Span::styled("      READY ", theme::dim()),
-        Span::styled(ready, theme::title()),
-        Span::styled("      RECORDINGS ", theme::dim()),
-        Span::styled(app.recordings.len().to_string(), theme::title()),
-    ]));
-    lines.push(Line::raw(""));
+    let attention = app.draft_count() + app.undistilled_count();
+    stat_card(
+        frame,
+        cards[0],
+        "RECORDINGS",
+        &app.recordings.len().to_string(),
+        theme::title(),
+        "captured",
+    );
+    stat_card(
+        frame,
+        cards[1],
+        "SKILLS",
+        &app.galdr_skill_count().to_string(),
+        theme::ok(),
+        &format!("+{} external", app.external_skill_count()),
+    );
+    stat_card(
+        frame,
+        cards[2],
+        "READINESS",
+        &ready,
+        theme::title(),
+        "mean score",
+    );
+    let (att_style, att_sub) = if attention > 0 {
+        (theme::warn(), "need action")
+    } else {
+        (theme::ok(), "all clear")
+    };
+    stat_card(
+        frame,
+        cards[3],
+        "ATTENTION",
+        &attention.to_string(),
+        att_style,
+        att_sub,
+    );
 
-    // Recent recordings.
-    lines.push(Line::styled("Recent recordings", theme::ok()));
+    // ── two columns: recent recordings · your skills ────────────────────────────
+    let mid =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(rows[1]);
+
+    let mut rec_lines: Vec<Line> = Vec::new();
     if app.recordings.is_empty() {
-        lines.push(Line::styled(
-            "  (none yet — `galdr rec start <name>`)",
-            theme::dim(),
+        rec_lines.push(Line::styled(
+            "no recordings yet — galdr rec start <name>",
+            theme::faint(),
         ));
     }
-    for r in app.recordings.iter().take(5) {
+    for r in app.recordings.iter().take(6) {
         let (mark, mstyle) = if r.distilled {
             ("✓", theme::ok())
         } else {
-            ("·", theme::dim())
+            ("○", theme::warn())
         };
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {mark} "), mstyle),
-            Span::styled(format!("{:<26}", ellipsize(&r.name, 26)), theme::text()),
-            Span::styled(short_ts(&r.started_at), theme::dim()),
+        rec_lines.push(Line::from(vec![
+            Span::styled(format!("{mark} "), mstyle),
+            Span::styled(format!("{:<24}", ellipsize(&r.name, 24)), theme::text()),
+            Span::styled(short_ts(&r.started_at), theme::faint()),
         ]));
     }
-    lines.push(Line::raw(""));
+    frame.render_widget(
+        Paragraph::new(rec_lines).block(block("Recent recordings")),
+        mid[0],
+    );
 
-    // Your distilled skills.
-    lines.push(Line::styled("Your skills", theme::ok()));
     let galdr_skills: Vec<_> = app
         .skills
         .iter()
         .filter(|s| s.origin == catalog::ORIGIN_GALDR)
         .collect();
+    let mut skill_lines: Vec<Line> = Vec::new();
     if galdr_skills.is_empty() {
-        lines.push(Line::styled(
-            "  (none yet — distill a recording on the Recordings tab)",
-            theme::dim(),
+        skill_lines.push(Line::styled(
+            "no skills yet — distill a recording",
+            theme::faint(),
         ));
     }
-    for s in galdr_skills.iter().take(5) {
-        lines.push(Line::from(vec![
+    for s in galdr_skills.iter().take(6) {
+        skill_lines.push(Line::from(vec![
             Span::styled(
-                format!("  {:<26}", ellipsize(&s.skill_name, 26)),
+                format!("{:<22}", ellipsize(&s.skill_name, 22)),
                 theme::text(),
             ),
             Span::styled(
                 format!("{:<7}", s.status),
                 readiness_style(s.readiness_score),
             ),
-            Span::styled(format!("rdy {}", s.readiness_score), theme::dim()),
+            Span::styled(format!("{:>3}", s.readiness_score), theme::dim()),
         ]));
     }
-    lines.push(Line::raw(""));
+    frame.render_widget(
+        Paragraph::new(skill_lines).block(block("Your skills")),
+        mid[1],
+    );
 
-    // Harnesses and their sensor wiring.
-    let mut hspans = vec![Span::styled("Harnesses   ", theme::dim())];
+    // ── harness strip ───────────────────────────────────────────────────────────
+    let mut hspans: Vec<Span> = Vec::new();
     for h in app.harnesses.iter().filter(|h| h.detected) {
         let (mark, st) = match h.galdr_hook {
             Some(true) => ("✓", theme::ok()),
             Some(false) => ("✗", theme::warn()),
             None => ("·", theme::dim()),
         };
-        hspans.push(Span::styled(format!("{mark} {}    ", h.name), st));
+        if !hspans.is_empty() {
+            hspans.push(Span::styled("   ", theme::faint()));
+        }
+        hspans.push(Span::styled(format!("{mark} "), st));
+        hspans.push(Span::styled(h.name.clone(), theme::text()));
     }
-    lines.push(Line::from(hspans));
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "Tab or 1–4 move between tabs · Enter browse recordings · ? help · q quit",
-        theme::dim(),
-    ));
+    if hspans.is_empty() {
+        hspans.push(Span::styled("no harness detected", theme::faint()));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(hspans)).block(block("Harnesses · sensor wiring")),
+        rows[2],
+    );
+}
 
-    frame.render_widget(Paragraph::new(lines).block(block("Overview")), area);
+/// One stat card in the Overview: a big accent number over a dim sub-label, in a rounded
+/// panel titled with the metric — the dashboard's headline figures.
+fn stat_card(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    value_style: Style,
+    sub: &str,
+) {
+    let body = vec![
+        Line::from(Span::styled(value.to_string(), value_style)),
+        Line::from(Span::styled(sub.to_string(), theme::faint())),
+    ];
+    frame.render_widget(
+        Paragraph::new(body)
+            .alignment(Alignment::Center)
+            .block(block(label)),
+        area,
+    );
 }
 
 fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
     if app.filter_mode {
         let line = Line::from(vec![
+            Span::raw(" "),
             Span::styled("/", theme::title()),
             Span::styled(app.filter.clone(), theme::ok()),
             Span::styled("▏", theme::title()),
@@ -336,17 +389,17 @@ fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
         }
     } else {
         match app.focus {
-            Panel::Overview => "tab/1-4 move · enter browse recordings · ? help · q quit",
+            Panel::Overview => "←→ tabs · enter browse · ? help · q quit",
             Panel::Recordings => {
-                "jk move · enter inspect · d distill · e export · / filter · r replay · tab · ?"
+                "jk move · ←→ tabs · enter inspect · d distill · e export · / filter · ? help"
             }
             Panel::Skills => {
-                "jk move · enter read · l link · v validate · O outcome · / filter · tab · ?"
+                "jk move · ←→ tabs · enter read · L link · v validate · O outcome · / filter · ?"
             }
-            Panel::Harnesses => "jk move · tab/1-4 tab · ? help · q quit",
+            Panel::Harnesses => "jk move · ←→ tabs · ? help · q quit",
         }
     };
-    let mut spans = Vec::new();
+    let mut spans = vec![Span::raw(" ")];
     if !app.status.is_empty() {
         spans.push(Span::styled(format!("{}  ", app.status), theme::ok()));
     }
@@ -426,7 +479,6 @@ fn render_recordings<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
-        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(
             &format!("Recordings · {}", app.rec_view.len()),
@@ -518,7 +570,6 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
-        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(&steps_title, focused));
     frame.render_stateful_widget(table, chunks[1], &mut app.detail_state);
@@ -583,7 +634,6 @@ fn render_skills<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>, fo
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
-        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(
             &format!("Skills · {g} galdr · {} ext", app.skills.len() - g),
@@ -631,7 +681,6 @@ fn render_harnesses<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>,
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
-        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(&format!("Harnesses · {detected}"), focused));
     frame.render_stateful_widget(table, area, &mut app.harness_state);
@@ -1031,6 +1080,20 @@ mod tests {
         let harn = render_text(&mut app);
         assert!(harn.contains("Claude Code"));
         assert!(harn.contains("Harness ·"));
+    }
+
+    #[test]
+    fn arrow_keys_switch_tabs() {
+        let mut app = App::new(fixture());
+        // Right from the Overview moves to the next tab (Recordings), not a no-op.
+        app.on_key(key(KeyCode::Right));
+        assert!(render_text(&mut app).contains("Inspector"));
+        // Right again → Skills.
+        app.on_key(key(KeyCode::Right));
+        assert!(render_text(&mut app).contains("Skill ·"));
+        // Left steps back → Recordings.
+        app.on_key(key(KeyCode::Left));
+        assert!(render_text(&mut app).contains("Inspector"));
     }
 
     #[test]

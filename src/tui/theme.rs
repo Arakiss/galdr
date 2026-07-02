@@ -27,9 +27,6 @@ pub const SELECT_BG: Color = Color::Rgb(46, 41, 78);
 /// The border type every panel uses — rounded corners read softer than square.
 pub const BORDER: BorderType = BorderType::Rounded;
 
-/// The indicator prefixed to the selected list row.
-pub const CURSOR: &str = "▸ ";
-
 pub fn title() -> Style {
     Style::new().fg(ACCENT_BRIGHT).add_modifier(Modifier::BOLD)
 }

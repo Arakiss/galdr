@@ -230,6 +230,14 @@ impl<C: Catalog> App<C> {
             KeyCode::Char('?') => return self.open_overlay(Overlay::Help),
             KeyCode::Tab => return self.switch_focus(self.focus.cycle(1)),
             KeyCode::BackTab => return self.switch_focus(self.focus.cycle(-1)),
+            // Left/Right (and vim h/l) move between tabs — the top-level navigation — as
+            // long as you are not drilled into a preview, where Left instead backs out.
+            KeyCode::Right | KeyCode::Char('l') if !self.preview_focus => {
+                return self.switch_focus(self.focus.cycle(1));
+            }
+            KeyCode::Left | KeyCode::Char('h') if !self.preview_focus => {
+                return self.switch_focus(self.focus.cycle(-1));
+            }
             KeyCode::Char(c @ '1'..='4') => {
                 let idx = c as usize - '1' as usize;
                 return self.switch_focus(Panel::ALL[idx]);
@@ -243,7 +251,7 @@ impl<C: Catalog> App<C> {
         match self.focus {
             // The Overview is a dashboard: Enter jumps into the recordings list to act.
             Panel::Overview => {
-                if matches!(key.code, KeyCode::Enter | KeyCode::Right) {
+                if key.code == KeyCode::Enter {
                     self.switch_focus(Panel::Recordings);
                 }
             }
@@ -335,7 +343,7 @@ impl<C: Catalog> App<C> {
                 page(&mut self.rec_state, self.rec_view.len(), -(PAGE as isize));
                 self.sync_preview();
             }
-            KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => self.enter_preview(),
+            KeyCode::Enter => self.enter_preview(),
             KeyCode::Char('d') => self.distill_selected(),
             KeyCode::Char('e') => self.export_selected(),
             KeyCode::Char('o') => self.show_span_path(),
@@ -423,8 +431,8 @@ impl<C: Catalog> App<C> {
                 page(&mut self.skill_state, len, -(PAGE as isize));
                 self.sync_preview();
             }
-            KeyCode::Enter | KeyCode::Right => self.enter_preview(),
-            KeyCode::Char('l') => self.link_selected(),
+            KeyCode::Enter => self.enter_preview(),
+            KeyCode::Char('L') => self.link_selected(),
             KeyCode::Char('v') => self.validate_selected(),
             KeyCode::Char('O') => self.outcome_selected(),
             _ => {}
