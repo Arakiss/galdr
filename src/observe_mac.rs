@@ -377,6 +377,28 @@ pub fn mac_serve(rec_id: &str) -> Result<()> {
     sensor::run(&session.events_file, &session.stop_flag, &session.log_file)
 }
 
+/// The two TCC permissions the native lane needs, checked without prompting. `None` off
+/// macOS, where the lane does not apply. Consumed by `galdr doctor`.
+pub struct MacPermissions {
+    /// Input Monitoring — required for the event tap to receive keys.
+    pub input_monitoring: bool,
+    /// Accessibility — required to resolve the clicked element's role/name/window/app.
+    pub accessibility: bool,
+}
+
+#[cfg(target_os = "macos")]
+pub fn mac_permissions() -> Option<MacPermissions> {
+    Some(MacPermissions {
+        input_monitoring: sensor::input_monitoring_trusted(),
+        accessibility: sensor::accessibility_trusted(),
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn mac_permissions() -> Option<MacPermissions> {
+    None
+}
+
 fn write_recording_files(recording: &record::Recording, events: &[Event]) -> Result<()> {
     let span_path = paths::span_file(&recording.rec_id)?;
     let rec_path = paths::recording_file(&recording.rec_id)?;
@@ -526,6 +548,12 @@ mod sensor {
              Grant it in System Settings → Privacy & Security → Input Monitoring,\n  \
              enable the entry for your terminal (or galdr), then run `galdr observe mac start` again."
         );
+    }
+
+    /// Whether Input Monitoring is granted, checked WITHOUT prompting (unlike `preflight`,
+    /// which prompts and bails). For read-only status surfaces like `doctor`.
+    pub fn input_monitoring_trusted() -> bool {
+        CGPreflightListenEventAccess()
     }
 
     /// Whether the process may query the accessibility tree (the separate Accessibility
