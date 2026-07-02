@@ -1205,7 +1205,7 @@ fn has_section(md: &str, section: &str) -> bool {
         .any(|line| line.trim().eq_ignore_ascii_case(&format!("## {section}")))
 }
 
-fn parse_frontmatter_name(md: &str) -> Option<String> {
+pub(crate) fn parse_frontmatter_name(md: &str) -> Option<String> {
     let mut lines = md.lines();
     if lines.next()?.trim() != "---" {
         return None;
@@ -1222,7 +1222,7 @@ fn parse_frontmatter_name(md: &str) -> Option<String> {
     None
 }
 
-fn parse_rec_id(md: &str) -> Option<String> {
+pub(crate) fn parse_rec_id(md: &str) -> Option<String> {
     for line in md.lines() {
         if let Some(idx) = line.find("rec_id:") {
             let after = &line[idx + "rec_id:".len()..];

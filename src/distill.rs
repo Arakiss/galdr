@@ -47,9 +47,7 @@ pub fn distill(
         let content = std::fs::read_to_string(src)
             .with_context(|| format!("could not read the distillation at {}", src.display()))?;
         validate_skill_md(&content)?;
-        let ctx = validate::ValidationCtx::new(false, strict);
-        install_skill(&skill_name, &skill_dir, &content, id, &ctx)?;
-        return Ok(());
+        return install_from(id, &recording, &content, name, strict);
     }
 
     // `--fast` accepts the mechanical render as final; the default hands the agent a
@@ -58,6 +56,116 @@ pub fn distill(
         return write_complete(id, &skill_name, &skill_dir, &recording, strict);
     }
     write_draft(id, &skill_name, &skill_dir, &recording, strict)
+}
+
+/// Installs a skill the agent authored (`--from`). An explicit `--name` always sets the
+/// install name. Otherwise, when the authored frontmatter carries a valid kebab-case
+/// `name:` that differs from the mechanical recording slug, galdr installs under *that*
+/// name — so the directory, the skill's own `name:`, and the catalog key all agree,
+/// instead of installing under the recording slug and splitting the skill's identity
+/// (the frontmatter name that `galdr validate` and the reindexed catalog key on). A
+/// leftover slug directory from a prior draft of the same recording is retired so no
+/// duplicate remains; a frontmatter name already held by an unrelated skill is refused
+/// without touching anything.
+fn install_from(
+    id: &str,
+    recording: &record::Recording,
+    content: &str,
+    explicit_name: Option<&str>,
+    strict: bool,
+) -> Result<()> {
+    let ctx = validate::ValidationCtx::new(false, strict);
+
+    // An explicit --name wins outright — no frontmatter inference.
+    if let Some(name) = explicit_name {
+        let install_name = slugify(name);
+        let install_dir = paths::skill_dir(&install_name)?;
+        install_skill(&install_name, &install_dir, content, id, &ctx)?;
+        return Ok(());
+    }
+
+    let recording_slug = skill_name_for(None, recording); // galdr-<slug>
+    let Some(install_name) = honored_frontmatter_name(content, &recording_slug) else {
+        // Nothing to honor: install under the recording slug, as before.
+        let install_dir = paths::skill_dir(&recording_slug)?;
+        install_skill(&recording_slug, &install_dir, content, id, &ctx)?;
+        return Ok(());
+    };
+
+    // The frontmatter renames the skill. Refuse to overwrite an UNRELATED skill that
+    // already holds that name, before touching anything.
+    let install_dir = paths::skill_dir(&install_name)?;
+    guard_name_collision(&install_name, &install_dir, id)?;
+
+    install_skill(&install_name, &install_dir, content, id, &ctx)?;
+
+    // A prior draft of THIS recording under the mechanical slug would leave a second
+    // copy behind; retire it so the rename is clean.
+    migrate_stale_slug_dir(&recording_slug, id);
+
+    println!("installed as {install_name} (renamed from recording slug {recording_slug})");
+    Ok(())
+}
+
+/// The frontmatter `name:` to honor for a `--from` install, or `None`. Only a name that
+/// is already kebab-case (the same normalization `slugify` applies to a chosen name) and
+/// actually differs from the recording slug is honored — so the installed directory can
+/// equal the name verbatim and identity never splits. A name that would change under
+/// slugify is left alone (installing under a slugified variant would split identity just
+/// the same), as is one that already equals the slug.
+fn honored_frontmatter_name(content: &str, recording_slug: &str) -> Option<String> {
+    let name = crate::catalog::parse_frontmatter_name(content)?;
+    if name != slugify(&name) {
+        return None;
+    }
+    (name != recording_slug).then_some(name)
+}
+
+/// Refuses a frontmatter rename that would land on an UNRELATED existing skill. A
+/// directory is "related" (safe to replace) only when its `SKILL.md` traces back to the
+/// same recording — a prior draft or version of the very skill being installed. Anything
+/// else is someone else's skill: bail without touching it.
+fn guard_name_collision(install_name: &str, install_dir: &Path, rec_id: &str) -> Result<()> {
+    let Ok(existing) = std::fs::read_to_string(install_dir.join("SKILL.md")) else {
+        return Ok(()); // nothing installed there — safe to write
+    };
+    if crate::catalog::parse_rec_id(&existing).as_deref() == Some(rec_id) {
+        return Ok(()); // our own prior draft/version — replacing it is fine
+    }
+    bail!(
+        "cannot install as '{install_name}': a different skill already exists at {} (from another recording). \
+         Rename the frontmatter `name:`, or retire that skill first with `galdr rm {install_name}`.",
+        tilde(install_dir)
+    );
+}
+
+/// Retires a leftover mechanical-slug directory once a `--from` install landed under a
+/// frontmatter name — but only when that directory is a prior draft/version of THIS
+/// recording (its provenance matches), never an unrelated skill that merely shares the
+/// slug. Best-effort: the rename already succeeded, so a failed cleanup only leaves a
+/// harmless duplicate and must not fail the install.
+fn migrate_stale_slug_dir(recording_slug: &str, rec_id: &str) {
+    let Ok(slug_dir) = paths::skill_dir(recording_slug) else {
+        return;
+    };
+    if !slug_dir.is_dir() {
+        return;
+    }
+    let Ok(existing) = std::fs::read_to_string(slug_dir.join("SKILL.md")) else {
+        return;
+    };
+    if crate::catalog::parse_rec_id(&existing).as_deref() != Some(rec_id) {
+        return; // an unrelated skill happens to sit under the slug — leave it
+    }
+    match crate::remove::retire_skill_dir(recording_slug) {
+        Ok(outcome) => println!(
+            "  retired the stale {recording_slug} draft → {}",
+            tilde(&outcome.moved_to)
+        ),
+        Err(err) => {
+            eprintln!("warning: could not retire the stale {recording_slug} draft: {err:#}")
+        }
+    }
 }
 
 /// The `--fast` (and `--auto` fallback) path: render the faithful skill from the span
@@ -1054,8 +1162,8 @@ fn verification_hint(events: &[Event]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        meaningful_steps, one_line, render_complete_skill, summary_truncate, validate_skill_md,
-        yaml_quoted,
+        honored_frontmatter_name, meaningful_steps, one_line, render_complete_skill,
+        summary_truncate, validate_skill_md, yaml_quoted,
     };
     use crate::record::Recording;
     use crate::span::{
@@ -1290,6 +1398,35 @@ mod tests {
     #[test]
     fn validate_accepts_a_well_formed_skill() {
         assert!(validate_skill_md(GOOD).is_ok());
+    }
+
+    #[test]
+    fn honored_frontmatter_name_only_takes_a_clean_rename() {
+        let md = |name: &str| {
+            format!(
+                "---\nname: {name}\ndescription: \"x\"\n---\n\n## When to use\nx\n## Steps\n1. x\n## Verification\nx\n"
+            )
+        };
+        // A clean kebab-case name that differs from the slug is honored.
+        assert_eq!(
+            honored_frontmatter_name(&md("skill-family-upgrade"), "galdr-rec-slug"),
+            Some("skill-family-upgrade".to_string())
+        );
+        // A name equal to the recording slug is not a rename.
+        assert_eq!(
+            honored_frontmatter_name(&md("galdr-rec-slug"), "galdr-rec-slug"),
+            None
+        );
+        // A name that slugify would change is left alone — installing under a slugified
+        // variant would split identity just the same.
+        assert_eq!(
+            honored_frontmatter_name(&md("Skill Family"), "galdr-rec-slug"),
+            None
+        );
+        assert_eq!(
+            honored_frontmatter_name(&md("UPPER"), "galdr-rec-slug"),
+            None
+        );
     }
 
     #[test]

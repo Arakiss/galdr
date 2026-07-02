@@ -379,6 +379,199 @@ fn distill_name_chooses_the_skill_name() {
 }
 
 #[test]
+fn distill_from_honors_the_frontmatter_name() {
+    // A refined skill renamed in its frontmatter must install under that name, not the
+    // mechanical recording slug — so `galdr validate <name>` finds it and identity does
+    // not split between the directory and the skill's own `name:`.
+    let sb = Sandbox::new();
+    let id = sb.record("visual branding upgrade", &[BASH_STATUS]);
+
+    let refined = sb.home().join("refined.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: skill-family-upgrade\ndescription: \"upgrade a family of related skills\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+
+    let out = sb
+        .cmd()
+        .args(["distill", &id, "--from"])
+        .arg(&refined)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains(
+            "installed as skill-family-upgrade (renamed from recording slug galdr-visual-branding-upgrade)"
+        ),
+        "{}",
+        stdout(&out)
+    );
+
+    // Installed under the frontmatter name; the mechanical slug directory is not created.
+    assert!(
+        sb.home()
+            .join(".agents/skills/skill-family-upgrade/SKILL.md")
+            .exists()
+    );
+    assert!(
+        !sb.home()
+            .join(".agents/skills/galdr-visual-branding-upgrade")
+            .exists(),
+        "the recording-slug directory must not be created"
+    );
+
+    // The catalog keys it under the frontmatter name, and `validate` resolves it.
+    assert!(stdout(&sb.run(&["skills"])).contains("skill-family-upgrade"));
+    assert!(
+        sb.run(&["validate", "skill-family-upgrade"])
+            .status
+            .success(),
+        "the renamed skill must validate by its frontmatter name"
+    );
+}
+
+#[test]
+fn distill_from_name_flag_overrides_the_frontmatter() {
+    // An explicit --name keeps priority over the frontmatter name.
+    let sb = Sandbox::new();
+    let id = sb.record("branding", &[BASH_STATUS]);
+    let refined = sb.home().join("refined.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: frontmatter-name\ndescription: \"x\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    let out = sb
+        .cmd()
+        .args(["distill", &id, "--from"])
+        .arg(&refined)
+        .args(["--name", "explicit-name"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        sb.home()
+            .join(".agents/skills/explicit-name/SKILL.md")
+            .exists()
+    );
+    assert!(
+        !sb.home().join(".agents/skills/frontmatter-name").exists(),
+        "the frontmatter name must not win over an explicit --name"
+    );
+}
+
+#[test]
+fn distill_from_refuses_a_frontmatter_name_held_by_another_skill() {
+    // A frontmatter name already taken by an UNRELATED skill (a different recording) is
+    // refused without touching anything — no silent clobber of someone else's skill.
+    let sb = Sandbox::new();
+    let other = sb.record("other", &[BASH_STATUS]);
+    let other_file = sb.home().join("other.md");
+    std::fs::write(
+        &other_file,
+        format!(
+            "---\nname: taken-name\ndescription: \"the incumbent\"\n---\n\n## Provenance\n- rec_id: `{other}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    assert!(
+        sb.cmd()
+            .args(["distill", &other, "--from"])
+            .arg(&other_file)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+
+    let mine = sb.record("mine", &[BASH_STATUS]);
+    let mine_file = sb.home().join("mine.md");
+    std::fs::write(
+        &mine_file,
+        format!(
+            "---\nname: taken-name\ndescription: \"the challenger\"\n---\n\n## Provenance\n- rec_id: `{mine}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    let refused = sb
+        .cmd()
+        .args(["distill", &mine, "--from"])
+        .arg(&mine_file)
+        .output()
+        .unwrap();
+    assert!(
+        !refused.status.success(),
+        "a colliding frontmatter name must be refused"
+    );
+    assert!(
+        stderr(&refused).contains("already exists"),
+        "{}",
+        stderr(&refused)
+    );
+
+    // The incumbent is untouched, and the challenger's own recording slug is not created.
+    let incumbent =
+        std::fs::read_to_string(sb.home().join(".agents/skills/taken-name/SKILL.md")).unwrap();
+    assert!(incumbent.contains("the incumbent"), "{incumbent}");
+    assert!(!sb.home().join(".agents/skills/galdr-mine").exists());
+}
+
+#[test]
+fn distill_from_migrates_a_stale_draft_under_the_slug() {
+    // A prior draft under the mechanical slug must not survive as a second copy once the
+    // authored skill installs under its frontmatter name: it is retired to .retired.
+    let sb = Sandbox::new();
+    let id = sb.record("family upgrade", &[BASH_STATUS]);
+    assert!(sb.run(&["distill", &id]).status.success());
+    assert!(
+        sb.home()
+            .join(".agents/skills/galdr-family-upgrade/SKILL.md")
+            .exists(),
+        "the draft is written under the recording slug"
+    );
+
+    let refined = sb.home().join("refined.md");
+    std::fs::write(
+        &refined,
+        format!(
+            "---\nname: skill-family-upgrade\ndescription: \"upgrade a family of related skills\"\n---\n\n## Provenance\n- rec_id: `{id}`\n\n## Goal\nx\n## Procedure\ny\n## Success criteria\nz\n"
+        ),
+    )
+    .unwrap();
+    let out = sb
+        .cmd()
+        .args(["distill", &id, "--from"])
+        .arg(&refined)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    // The renamed skill is the only live copy; the stale draft was retired, not left behind.
+    assert!(
+        sb.home()
+            .join(".agents/skills/skill-family-upgrade/SKILL.md")
+            .exists()
+    );
+    assert!(
+        !sb.home()
+            .join(".agents/skills/galdr-family-upgrade")
+            .exists(),
+        "the stale slug directory must be moved aside"
+    );
+    assert!(
+        sb.home()
+            .join(".agents/skills/.retired/galdr-family-upgrade/SKILL.md")
+            .exists(),
+        "the stale draft should be retired to .retired"
+    );
+}
+
+#[test]
 fn validate_passes_clean_skills_and_refuses_bad_content() {
     // The gate is reachable from the CLI: a clean distilled skill validates, a file
     // carrying a personal path is refused, and --all --json is machine-readable.
