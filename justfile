@@ -53,3 +53,7 @@ doc:
 # Remove all build artefacts.
 clean:
     cargo clean
+
+# User-approved release cut for a merged release-please PR (tags + verifies)
+release-cut:
+    scripts/release-cut.sh
