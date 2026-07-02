@@ -60,10 +60,6 @@ struct MacWireEvent {
     /// Mouse button number for click events (0 = left, 1 = right, 2 = other).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     button: Option<i64>,
-    /// Virtual keycode for key events. The literal character is never captured in
-    /// phase 1 — keystrokes are recorded as an occurrence, not their content.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    keycode: Option<i64>,
     /// Scroll delta (vertical) for scroll events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scroll_delta: Option<i64>,
@@ -99,7 +95,10 @@ fn mac_wire_to_event(seq: u64, wire: MacWireEvent) -> Event {
     };
     // Build a semantic target when we resolved the accessibility role of the clicked
     // element; otherwise fall back to a coordinate-only target so the step is not lost.
-    let target = if wire.role.is_some() || coord_summary.is_some() {
+    // A key event carries the mouse position too, but that coordinate is unrelated to the
+    // keystroke, so a key with no resolved role gets no target rather than a bogus one.
+    let is_key = wire.action == "human.mac.key";
+    let target = if wire.role.is_some() || (coord_summary.is_some() && !is_key) {
         Some(HumanTarget {
             primary: TargetLocator::Role {
                 role: wire.role.clone().unwrap_or_else(|| "AXUnknown".to_string()),
@@ -184,13 +183,6 @@ fn read_session(rec_id: &str) -> Result<MacObserveSession> {
     Ok(serde_json::from_str(&contents)?)
 }
 
-fn count_event_lines(path: &std::path::Path) -> usize {
-    match std::fs::read_to_string(path) {
-        Ok(contents) => contents.lines().filter(|l| !l.trim().is_empty()).count(),
-        Err(_) => 0,
-    }
-}
-
 fn read_wire_events(path: &std::path::Path) -> Result<Vec<MacWireEvent>> {
     let Ok(contents) = std::fs::read_to_string(path) else {
         return Ok(Vec::new());
@@ -213,11 +205,27 @@ fn read_wire_events(path: &std::path::Path) -> Result<Vec<MacWireEvent>> {
 /// call returns as soon as the sensor is running.
 pub fn mac_start(name: String) -> Result<()> {
     paths::ensure_dirs()?;
-    if paths::mac_observe_active()?.exists() {
+    // A *parseable* active pointer means a live observation; refuse. A pointer that exists
+    // but does not parse (schema drift, a manual edit) is stale: garbage-collect it so the
+    // CLI never wedges — `start` refusing while `stop` sees nothing and orphans the sensor.
+    if read_active_session()?.is_some() {
         bail!("a macOS observation is already active. Run `galdr observe mac stop` first.");
+    }
+    if let Ok(active) = paths::mac_observe_active()
+        && active.exists()
+    {
+        let _ = std::fs::remove_file(&active);
     }
 
     sensor::preflight()?;
+    if !sensor::accessibility_trusted() {
+        eprintln!(
+            "{} Accessibility is not granted — clicks will be recorded coordinate-only, with \
+             no element role/name/window/app.\n  Grant it in System Settings → Privacy & \
+             Security → Accessibility for semantic targeting.",
+            style::amber("warning:")
+        );
+    }
 
     let rec_id = Ulid::new().to_string();
     let started_at = record::now_rfc3339();
@@ -227,6 +235,13 @@ pub fn mac_start(name: String) -> Result<()> {
     let log_file = session_dir.join("sensor.log");
     let stop_flag = session_dir.join("stop");
     std::fs::write(&events_file, "")?;
+    // The raw capture can hold pre-redaction context (window titles, app names); keep it
+    // owner-only even though ~/.galdr is already 0700, and it is purged on stop.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&events_file, std::fs::Permissions::from_mode(0o600));
+    }
 
     let mut session = MacObserveSession {
         rec_id: rec_id.clone(),
@@ -266,7 +281,11 @@ pub fn mac_status() -> Result<()> {
         println!("no active macOS observation");
         return Ok(());
     };
-    let event_count = count_event_lines(&session.events_file);
+    // Count parsed events, the same rule `stop` folds into the span, so the two surfaces
+    // never disagree on a torn or malformed trailing line.
+    let event_count = read_wire_events(&session.events_file)
+        .map(|e| e.len())
+        .unwrap_or(0);
     let live = session.sensor_pid.map(sensor_alive).unwrap_or(false);
     println!("active macOS observation: {}", session.name);
     println!("  rec_id: {}", session.rec_id);
@@ -286,9 +305,23 @@ pub fn mac_stop() -> Result<()> {
         return Ok(());
     };
 
-    // Ask the sensor to leave its run loop, then make sure it is gone.
+    // Ask the sensor to leave its run loop and give it a grace window to drain in-flight
+    // hits and flush them. The watcher polls the flag every 150ms, then the run loop's
+    // drop(ctx)+join drains the channel; only if the sensor is still alive after the grace
+    // window do we SIGTERM as a true backstop. Reading events before it exits would fold
+    // only the already-flushed prefix into the span and silently drop the tail.
     let _ = std::fs::write(&session.stop_flag, "1");
-    stop_sensor(session.sensor_pid);
+    if let Some(pid) = session.sensor_pid {
+        let deadline = 40; // ~2s at 50ms steps
+        let mut waited = 0;
+        while waited < deadline && sensor_alive(pid) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            waited += 1;
+        }
+        if sensor_alive(pid) {
+            stop_sensor(Some(pid));
+        }
+    }
 
     let wire_events = read_wire_events(&session.events_file)?;
     let events: Vec<Event> = wire_events
@@ -307,6 +340,10 @@ pub fn mac_stop() -> Result<()> {
     };
     write_recording_files(&recording, &events)?;
     let _ = std::fs::remove_file(paths::mac_observe_active()?);
+    // Purge the raw capture now that it is folded into the immutable span. The span is the
+    // canonical artifact (and gets redacted again at skill-install time); the intermediate
+    // events file can hold pre-redaction context, so it must not linger on disk.
+    let _ = std::fs::remove_dir_all(&session.session_dir);
     let _ = catalog::sync_closed_recording(&recording, &events);
     for event in &events {
         ipc::notify_best_effort(&ipc::Request::EventAppended {
@@ -369,11 +406,21 @@ fn write_recording_files(recording: &record::Recording, events: &[Event]) -> Res
 
 fn spawn_sensor(rec_id: &str) -> Result<u32> {
     let exe = std::env::current_exe().context("could not resolve the galdr binary path")?;
+    // Route the sensor's stderr to its log file, not /dev/null, so a failure inside the
+    // detached process (e.g. the tap could not be created because a permission was revoked
+    // between preflight and spawn) leaves a diagnosable trace instead of vanishing.
+    let log_path = paths::mac_observe_session_dir(rec_id)?.join("sensor.log");
+    let stderr = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map(std::process::Stdio::from)
+        .unwrap_or_else(|_| std::process::Stdio::null());
     let child = std::process::Command::new(exe)
         .args(["observe", "mac", "serve", rec_id])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(stderr)
         .spawn()
         .context("could not spawn the macOS observe sensor")?;
     Ok(child.id())
@@ -428,7 +475,7 @@ mod sensor {
     use std::sync::mpsc::{self, Receiver, Sender};
 
     use anyhow::{Context, Result, bail};
-    use objc2_application_services::{AXError, AXUIElement};
+    use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement};
     use objc2_core_foundation::{
         CFMachPort, CFRetained, CFRunLoop, CFString, CFType, Type, kCFRunLoopCommonModes,
     };
@@ -453,7 +500,6 @@ mod sensor {
         x: f64,
         y: f64,
         button: Option<i64>,
-        keycode: Option<i64>,
         scroll_delta: Option<i64>,
         /// Resolve the accessibility context under (x, y)? True only for clicks.
         resolve_ax: bool,
@@ -480,6 +526,14 @@ mod sensor {
              Grant it in System Settings → Privacy & Security → Input Monitoring,\n  \
              enable the entry for your terminal (or galdr), then run `galdr observe mac start` again."
         );
+    }
+
+    /// Whether the process may query the accessibility tree (the separate Accessibility
+    /// TCC grant, distinct from Input Monitoring). Without it clicks still record, but
+    /// coordinate-only — no role/name/window/app — so `start` warns rather than failing.
+    pub fn accessibility_trusted() -> bool {
+        // SAFETY: a parameterless predicate that only reads the TCC trust state.
+        unsafe { AXIsProcessTrusted() }
     }
 
     /// Build the event-of-interest mask from a list of event types.
@@ -511,11 +565,13 @@ mod sensor {
             return event.as_ptr();
         }
 
-        // Privacy hard gate: never capture keystrokes while secure input is active — a
-        // password field is focused somewhere. macOS already blocks the tap from seeing
-        // these keys (EnableSecureEventInput suppresses event taps); this is defense in
-        // depth so a key can never reach the span even if one slips through.
-        if etype == CGEventType::KeyDown && secure_input_active() {
+        // Privacy hard gate: capture NOTHING while secure input is active — a credential
+        // dialog is focused. macOS already blocks the tap from seeing keys
+        // (EnableSecureEventInput), but clicks and AX resolution would otherwise still run
+        // and record the role/label/window/app of a password sheet. Suppressing the whole
+        // path keeps every kind of event out of the recording during a secure session, and
+        // fails safe if a later phase adds key-up/modifier events to the mask.
+        if secure_input_active() {
             return event.as_ptr();
         }
 
@@ -551,7 +607,6 @@ mod sensor {
             x: point.x,
             y: point.y,
             button: None,
-            keycode: None,
             scroll_delta: None,
             resolve_ax: false,
         };
@@ -576,11 +631,11 @@ mod sensor {
                 hit.resolve_ax = true;
             }
             CGEventType::KeyDown => {
+                // A key is recorded as an occurrence only. The virtual keycode is NEVER
+                // read: it maps deterministically back to the typed character (that is how
+                // keyloggers work), so capturing it — even to an intermediate file — would
+                // defeat the "content is never captured" guarantee.
                 hit.action = "human.mac.key";
-                hit.keycode = Some(CGEvent::integer_value_field(
-                    Some(ev),
-                    CGEventField::KeyboardEventKeycode,
-                ));
             }
             CGEventType::ScrollWheel => {
                 hit.action = "human.mac.scroll";
@@ -606,10 +661,15 @@ mod sensor {
         let (tx, rx) = mpsc::channel::<RawHit>();
         let resolver = std::thread::spawn(move || resolve_loop(rx, log));
 
-        let mut ctx = Box::new(SensorCtx {
+        // Own the context via a raw pointer for the whole run loop. The FFI idiom is
+        // deliberate: `user_info` and every `ctx.tap` write go through this single raw
+        // pointer, never through a `Box`/`&mut` owner — a reborrow-then-owner-access would
+        // invalidate the pointer's provenance (Stacked/Tree Borrows) and make the
+        // callback's deref UB. We reclaim and drop it after the run loop returns.
+        let ctx_ptr = Box::into_raw(Box::new(SensorCtx {
             tx,
             tap: std::ptr::null(),
-        });
+        }));
 
         let types = [
             CGEventType::LeftMouseDown,
@@ -621,7 +681,7 @@ mod sensor {
         let mask = mask_for(&types);
 
         // SAFETY: the callback is implemented per its contract and `user_info` points at
-        // `ctx`, which outlives the run loop (we hold `ctx` for the whole function).
+        // the leaked `SensorCtx`, which we keep alive until after the run loop returns.
         let tap = unsafe {
             CGEvent::tap_create(
                 CGEventTapLocation::HIDEventTap,
@@ -629,16 +689,22 @@ mod sensor {
                 CGEventTapOptions::ListenOnly,
                 mask,
                 Some(callback),
-                (&mut *ctx as *mut SensorCtx) as *mut c_void,
+                ctx_ptr as *mut c_void,
             )
         };
         let Some(tap) = tap else {
+            // Reclaim the leaked context on the error path so it is not leaked for real.
+            drop(unsafe { Box::from_raw(ctx_ptr) });
             bail!(
                 "could not create the event tap — Input Monitoring is likely not granted \
                  to this process"
             );
         };
-        ctx.tap = &*tap as *const CFMachPort;
+        // SAFETY: no callback can fire yet (the tap is not enabled / not on a run loop),
+        // and the write goes through the same raw provenance as `user_info`.
+        unsafe {
+            (*ctx_ptr).tap = &*tap as *const CFMachPort;
+        }
 
         let source = CFMachPort::new_run_loop_source(None, Some(&tap), 0)
             .context("could not create the run loop source for the event tap")?;
@@ -656,10 +722,11 @@ mod sensor {
 
         CFRunLoop::run();
 
-        // The run loop has stopped: drop the ctx (and its sender) so the resolver drains
-        // the remaining hits and exits, then join it so every event is flushed to disk
-        // before `run` returns and the process exits.
-        drop(ctx);
+        // The run loop has stopped and no callback can run again. Reclaim the context and
+        // drop it (dropping its Sender) so the resolver drains the remaining hits and
+        // exits, then join it so every event is flushed to disk before `run` returns.
+        // SAFETY: the run loop is done; the callback will not deref `ctx_ptr` again.
+        drop(unsafe { Box::from_raw(ctx_ptr) });
         let _ = resolver.join();
         Ok(())
     }
@@ -681,7 +748,6 @@ mod sensor {
                 x: Some(hit.x),
                 y: Some(hit.y),
                 button: hit.button,
-                keycode: hit.keycode,
                 scroll_delta: hit.scroll_delta,
                 role: None,
                 name: None,
@@ -853,6 +919,10 @@ mod sensor {
         bail!("`galdr observe mac` is only available on macOS.");
     }
 
+    pub fn accessibility_trusted() -> bool {
+        false
+    }
+
     pub fn run(_events_file: &Path, _stop_flag: &Path, _log_file: &Path) -> Result<()> {
         bail!("`galdr observe mac` is only available on macOS.");
     }
@@ -869,7 +939,6 @@ mod tests {
             x: Some(120.0),
             y: Some(48.0),
             button: None,
-            keycode: None,
             scroll_delta: None,
             role: None,
             name: None,
@@ -924,11 +993,10 @@ mod tests {
     }
 
     #[test]
-    fn wire_key_omits_content() {
-        let mut wire = sample_wire("human.mac.key");
-        wire.x = None;
-        wire.y = None;
-        wire.keycode = Some(9);
+    fn wire_key_omits_content_and_has_no_bogus_target() {
+        // The real sensor stamps the mouse position on key events too; sample_wire keeps
+        // x/y set to mirror that. A keystroke must still record no content and no target.
+        let wire = sample_wire("human.mac.key");
         let event = mac_wire_to_event(3, wire);
         assert_eq!(event.seq, 3);
         let human = event.human.expect("human payload");
@@ -937,6 +1005,12 @@ mod tests {
             Some(HumanValue::Omitted { .. }) => {}
             other => panic!("expected omitted key value, got {other:?}"),
         }
+        // No AX role resolved for a key, so the unrelated mouse coordinate must NOT become
+        // a spurious target.
+        assert!(
+            human.target.is_none(),
+            "a keystroke must not carry a coordinate target"
+        );
     }
 
     #[test]
