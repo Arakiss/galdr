@@ -511,6 +511,14 @@ mod sensor {
             return event.as_ptr();
         }
 
+        // Privacy hard gate: never capture keystrokes while secure input is active — a
+        // password field is focused somewhere. macOS already blocks the tap from seeing
+        // these keys (EnableSecureEventInput suppresses event taps); this is defense in
+        // depth so a key can never reach the span even if one slips through.
+        if etype == CGEventType::KeyDown && secure_input_active() {
+            return event.as_ptr();
+        }
+
         // Minimal hot-path work: read the cheap in-process fields and hand the hit to the
         // resolver thread. No AX call here — that IPC belongs off the tap thread.
         if let Some(hit) = describe(etype, ev) {
@@ -519,6 +527,19 @@ mod sensor {
 
         // Listen-only: the return is ignored, but the contract is to pass the event on.
         event.as_ptr()
+    }
+
+    /// Whether any process currently has secure keyboard entry enabled — i.e. a password
+    /// field is focused. Carbon's `IsSecureEventInputEnabled` is a global flag, exactly
+    /// what TextExpander and Keyboard Maestro poll to suspend capture. Not bound by objc2,
+    /// so we declare it and link the Carbon framework.
+    fn secure_input_active() -> bool {
+        #[link(name = "Carbon", kind = "framework")]
+        unsafe extern "C" {
+            fn IsSecureEventInputEnabled() -> u8;
+        }
+        // SAFETY: a parameterless Carbon predicate that only reads a global flag.
+        unsafe { IsSecureEventInputEnabled() != 0 }
     }
 
     /// Build a raw hit from one observed CGEvent, or `None` for events we ignore.
