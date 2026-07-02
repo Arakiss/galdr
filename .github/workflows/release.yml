@@ -45,11 +45,15 @@ jobs:
           set -euo pipefail
 
           repo="${GITHUB_REPOSITORY}"
+          owner="${repo%%/*}"
+          # REST (not search): the search index lags right after a merge — the
+          # post-merge run fired 10s after merging #75 and search still saw
+          # nothing pending. The pulls list endpoint is immediately consistent.
           pending="$(
-            gh pr list --repo "${repo}" \
-              --state merged --label 'autorelease: pending' --limit 20 \
-              --json number,title,mergedAt,mergeCommit \
-              --jq 'sort_by(.mergedAt) | reverse | .[0] // empty'
+            gh api "repos/${repo}/pulls?state=closed&base=main&head=${owner}:release-please--branches--main&per_page=10" \
+              --jq '[ .[] | select(.merged_at != null)
+                          | select([.labels[].name] | index("autorelease: pending")) ]
+                    | sort_by(.merged_at) | reverse | .[0] // empty'
           )"
 
           if [[ -z "${pending}" ]]; then
@@ -59,19 +63,27 @@ jobs:
 
           pr_number="$(jq -r '.number' <<< "${pending}")"
           pr_title="$(jq -r '.title' <<< "${pending}")"
-          pr_sha="$(jq -r '.mergeCommit.oid // empty' <<< "${pending}")"
+          pr_sha="$(jq -r '.merge_commit_sha // empty' <<< "${pending}")"
 
           if [[ -z "${pr_sha}" ]]; then
             echo "::warning::Release PR #${pr_number} has no merge commit; skipping recovery."
             exit 0
           fi
 
-          if [[ ! "${pr_title}" =~ ([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?) ]]; then
-            echo "::warning::Could not parse a version from release PR #${pr_number}: ${pr_title}"
+          # The default manifest PR title ('chore: release main') carries no
+          # version — read it from the manifest the release PR itself updated,
+          # at the merge commit. Title stays as a fallback for custom patterns.
+          version="$(
+            gh api "repos/${repo}/contents/.release-please-manifest.json?ref=${pr_sha}" \
+              --jq '.content' | base64 -d | jq -r '."." // empty'
+          )"
+          if [[ -z "${version}" && "${pr_title}" =~ ([0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?) ]]; then
+            version="${BASH_REMATCH[1]}"
+          fi
+          if [[ -z "${version}" ]]; then
+            echo "::warning::Could not determine the version for release PR #${pr_number} (${pr_title})."
             exit 0
           fi
-
-          version="${BASH_REMATCH[1]}"
           tag="v${version}"
           if gh release view "${tag}" --repo "${repo}" >/dev/null 2>&1; then
             echo "Release ${tag} already exists; marking PR #${pr_number} tagged."
