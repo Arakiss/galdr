@@ -20,6 +20,7 @@ mod ipc;
 mod launchd;
 mod link;
 mod observe;
+mod observe_mac;
 mod outcome;
 mod parametrize;
 mod paths;
@@ -351,6 +352,31 @@ enum ObserveAction {
         #[command(subcommand)]
         action: BrowserObserveAction,
     },
+    /// Observe a native macOS workflow: clicks, scrolls and keystrokes captured
+    /// through a listen-only event tap. macOS only; needs Input Monitoring.
+    Mac {
+        #[command(subcommand)]
+        action: MacObserveAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum MacObserveAction {
+    /// Start a macOS-observation session (spawns the native sensor).
+    Start {
+        /// Human-readable name for the recording.
+        name: String,
+    },
+    /// Stop the active macOS-observation session and write the recording.
+    Stop,
+    /// Show the active macOS-observation session.
+    Status,
+    /// Internal native sensor process.
+    #[command(hide = true)]
+    Serve {
+        /// Recording id of the macOS-observation session.
+        rec_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -546,6 +572,14 @@ fn main() {
                 BrowserObserveAction::Status => exit_on_error(observe::browser_status()),
                 BrowserObserveAction::Serve { rec_id } => {
                     exit_on_error(observe::browser_serve(&rec_id))
+                }
+            },
+            ObserveAction::Mac { action } => match action {
+                MacObserveAction::Start { name } => exit_on_error(observe_mac::mac_start(name)),
+                MacObserveAction::Stop => exit_on_error(observe_mac::mac_stop()),
+                MacObserveAction::Status => exit_on_error(observe_mac::mac_status()),
+                MacObserveAction::Serve { rec_id } => {
+                    exit_on_error(observe_mac::mac_serve(&rec_id))
                 }
             },
         },

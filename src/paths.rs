@@ -129,6 +129,16 @@ pub fn browser_observe_session_dir(rec_id: &str) -> Result<PathBuf> {
     Ok(observe_root()?.join(rec_id))
 }
 
+/// Active macOS-observation flag: `~/.galdr/observe/mac-active.json`.
+pub fn mac_observe_active() -> Result<PathBuf> {
+    Ok(observe_root()?.join("mac-active.json"))
+}
+
+/// A macOS-observation session directory: `~/.galdr/observe/<rec_id>`.
+pub fn mac_observe_session_dir(rec_id: &str) -> Result<PathBuf> {
+    Ok(observe_root()?.join(rec_id))
+}
+
 /// Append-only skill usage log: `~/.galdr/outcomes/skill_usage.jsonl`.
 pub fn skill_usage_log() -> Result<PathBuf> {
     Ok(outcomes_dir()?.join("skill_usage.jsonl"))

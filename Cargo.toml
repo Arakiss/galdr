@@ -52,6 +52,25 @@ ulid = "1.2.1"
 [dev-dependencies]
 tempfile = "3.27.0"
 
+# macOS-only native observation sensor (`galdr observe mac`). objc2 bindings for the
+# CGEventTap (input capture) and the CoreFoundation run loop that drives it. Gated to
+# the macOS target: a Linux/Windows build never pulls these, and the sensor there is a
+# stub that fails with a clear message.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "CFRunLoop",
+    "CFMachPort",
+    "CFBase",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGEvent",
+    "CGEventTypes",
+    "CGEventSource",
+] }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
