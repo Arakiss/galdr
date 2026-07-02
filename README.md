@@ -60,7 +60,9 @@ prefix. Run `galdr` with no arguments for a one-screen overview of where you are
 ## The loop
 
 1. **Record** — start a recording, do the task with your agent, stop. Its tool calls are
-   captured automatically; nothing to narrate.
+   captured automatically; nothing to narrate. Recordings bind to the agent session that
+   starts them, so parallel agents — say Claude Code and Codex side by side — each record
+   their own task without crossing streams.
 2. **Distill** — a replay of the tool calls is not yet a skill. `galdr distill` renders a
    faithful draft and hands the agent an authoring brief: supply the *why*, the inputs that
    vary, each step's intent, the gotchas. Install your version with `--from`. `--fast` takes
@@ -77,7 +79,14 @@ prefix. Run `galdr` with no arguments for a one-screen overview of where you are
 - **`galdr tui`** — a terminal UI: an Overview dashboard, then tabs for recordings, skills,
   and harnesses; read a `SKILL.md` or a recording's (noise-filtered) steps at a glance.
 - **`galdr skills` / `galdr doctor`** — a small readiness-scored skill catalog, and a health
-  check for your setup.
+  check for your setup (including CLI↔daemon version skew and available updates).
+- **`galdr rm`** — retire a skill: unlink it from every harness, move it to `.retired/`.
+  Nothing is hard-deleted.
+- **`galdr upgrade`** — self-update from crates.io, checked only when you ask (never in the
+  background), restarting the daemon it manages. `--check` exits 10 when an update exists,
+  for scripts.
+- **`galdr daemon install`** — hand the daemon to launchd on macOS: starts at login,
+  restarts on crash, survives upgrades. `uninstall` undoes it.
 - Every read command takes `--json`, so an agent consumes galdr without scraping a table.
 
 ## One skill, every harness
@@ -116,7 +125,9 @@ Shipped: the record → distill → replay loop with **author-by-default** disti
 **`galdr suggest`** and **`galdr bench`**, an **Overview-led TUI**, multi-harness skills and
 sensors (Claude Code, Codex, Cursor), **Human Browser Observe** for browser workflows,
 optional **vision-assisted authoring** (keep screenshots ephemerally so the authoring pass
-writes semantic GUI steps), and a safe, redacted export path.
+writes semantic GUI steps), a safe, redacted export path, **concurrent per-session
+recordings** for multi-agent setups, full skill lifecycle (**`galdr rm`**), and a CLI that
+maintains itself (**`galdr upgrade`**, launchd-managed daemon).
 
 Next: a live end-to-end recording verified in each harness, native macOS human observation
 behind explicit permissions, and a multi-agent broker over the same model.
