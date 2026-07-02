@@ -17,6 +17,7 @@ mod ext;
 mod harness;
 mod hook;
 mod ipc;
+mod launchd;
 mod link;
 mod observe;
 mod outcome;
@@ -381,6 +382,15 @@ enum DaemonAction {
     Status,
     /// Ask the daemon to shut down gracefully.
     Stop,
+    /// Install a macOS LaunchAgent so the daemon starts at login and restarts on crash.
+    ///
+    /// Writes ~/Library/LaunchAgents/dev.galdr.daemon.plist pointing at this binary,
+    /// stops any loose (nohup) daemon, and loads the job with launchctl. macOS-only.
+    Install,
+    /// Remove the macOS LaunchAgent (unload the job and delete the plist).
+    ///
+    /// Leaves logs and recordings under ~/.galdr untouched. macOS-only.
+    Uninstall,
 }
 
 #[derive(Subcommand)]
@@ -650,6 +660,8 @@ fn main() {
         Commands::Daemon { action, detach } => match action {
             Some(DaemonAction::Status) => exit_on_error(cmd_daemon_status()),
             Some(DaemonAction::Stop) => exit_on_error(cmd_daemon_stop()),
+            Some(DaemonAction::Install) => exit_on_error(launchd::install()),
+            Some(DaemonAction::Uninstall) => exit_on_error(launchd::uninstall()),
             None => exit_on_error(daemon::run(detach)),
         },
     }
@@ -703,6 +715,11 @@ fn cmd_daemon_status() -> anyhow::Result<()> {
                 println!("daemon stopped");
             }
         }
+    }
+    // Whether launchd manages it (macOS): managed, installed-but-not-loaded, or a loose
+    // process. Omitted off macOS, where there is no launchd to report on.
+    if let Some(line) = launchd::status_line() {
+        println!("  {line}");
     }
     Ok(())
 }

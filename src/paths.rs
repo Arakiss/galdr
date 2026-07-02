@@ -165,6 +165,22 @@ pub fn pidfile() -> Result<PathBuf> {
     Ok(galdr_root()?.join("galdrd.pid"))
 }
 
+/// Daemon log directory: `~/.galdr/logs`. Created by `galdr daemon install` so the
+/// LaunchAgent has somewhere to send the daemon's stdout and stderr.
+pub fn logs_dir() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("logs"))
+}
+
+/// LaunchAgent daemon stdout log: `~/.galdr/logs/daemon.out.log`.
+pub fn daemon_out_log() -> Result<PathBuf> {
+    Ok(logs_dir()?.join("daemon.out.log"))
+}
+
+/// LaunchAgent daemon stderr log: `~/.galdr/logs/daemon.err.log`.
+pub fn daemon_err_log() -> Result<PathBuf> {
+    Ok(logs_dir()?.join("daemon.err.log"))
+}
+
 /// Queryable catalog database: `~/.galdr/catalog.sqlite`.
 pub fn catalog_db() -> Result<PathBuf> {
     Ok(galdr_root()?.join("catalog.sqlite"))

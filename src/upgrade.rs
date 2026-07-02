@@ -22,12 +22,11 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
-use crate::{daemon, ipc};
+use crate::{daemon, ipc, launchd};
 
 /// The crates.io sparse-index URL for galdr. One JSON line per published version.
 const INDEX_URL: &str = "https://index.crates.io/ga/ld/galdr";
@@ -329,12 +328,24 @@ fn restart_daemon_if_stale(latest: &SemVer) {
         return;
     }
     let was = version.as_deref().unwrap_or("unknown");
-    println!("restarting daemon (was {was}) so it runs {latest}…");
-    if let Err(e) = restart_daemon() {
-        eprintln!(
-            "warning: could not restart the daemon: {e:#}\n\
-             restart it yourself: galdr daemon stop && galdr daemon"
-        );
+    // A launchd-managed daemon is restarted in place (kickstart -k re-launches it from
+    // the on-disk binary); a loose nohup daemon is stopped and relaunched detached.
+    if launchd::is_managed() {
+        println!("restarting launchd-managed daemon (was {was}) so it runs {latest}…");
+        if let Err(e) = launchd::kickstart() {
+            eprintln!(
+                "warning: could not kickstart the daemon: {e:#}\n\
+                 restart it yourself: launchctl kickstart -k gui/$(id -u)/dev.galdr.daemon"
+            );
+        }
+    } else {
+        println!("restarting daemon (was {was}) so it runs {latest}…");
+        if let Err(e) = restart_daemon() {
+            eprintln!(
+                "warning: could not restart the daemon: {e:#}\n\
+                 restart it yourself: galdr daemon stop && galdr daemon"
+            );
+        }
     }
 }
 
@@ -342,16 +353,9 @@ fn restart_daemon_if_stale(latest: &SemVer) {
 /// detach path (own process group, null stdio) — the same thing `galdr daemon
 /// --detach` does — so the freshly installed binary now on disk becomes the daemon.
 fn restart_daemon() -> Result<()> {
-    // Ask the old daemon to shut down; ignore the reply (it may already be gone).
-    let _ = ipc::query(&ipc::Request::Shutdown);
-    // Wait for it to release the socket before we relaunch — otherwise the new
+    // Stop the old daemon and wait for it to release the socket — otherwise the new
     // daemon's single-instance probe would see the old one and bow out.
-    for _ in 0..40 {
-        if ipc::query(&ipc::Request::Ping).is_err() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    daemon::stop_and_wait();
     daemon::run(true)
 }
 

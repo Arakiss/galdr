@@ -140,6 +140,27 @@ fn write_index_fixture(sb: &Sandbox, entries: &[(&str, bool)]) -> PathBuf {
     path
 }
 
+/// Writes an always-succeeding `launchctl` stand-in that appends its arguments to a
+/// log file, and returns `(script_path, log_path)`. Point `GALDR_LAUNCHCTL` at the
+/// script so `galdr daemon install`/`status`/`uninstall` exercise the real command
+/// wiring (arg construction, exit-code handling) without touching the live launchd.
+#[cfg(target_os = "macos")]
+fn fake_launchctl(sb: &Sandbox) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let log = sb.home().join("launchctl.log");
+    let script = sb.home().join("fake-launchctl.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nexit 0\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (script, log)
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -2261,4 +2282,93 @@ fn daemon_indexes_and_answers_queries() {
     let stop = sb.run(&["daemon", "stop"]);
     assert!(stop.status.success());
     assert!(stdout(&stop).contains("daemon stopped"));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn daemon_install_writes_loads_and_uninstalls_the_launchagent() {
+    let sb = Sandbox::new();
+    let (launchctl, log) = fake_launchctl(&sb);
+
+    let install = sb
+        .cmd()
+        .env("GALDR_LAUNCHCTL", &launchctl)
+        .args(["daemon", "install"])
+        .output()
+        .unwrap();
+    assert!(install.status.success(), "{}", stderr(&install));
+
+    // The plist landed under this HOME's LaunchAgents, wired to run this binary as a
+    // daemon and to keep it alive.
+    let plist = sb
+        .home()
+        .join("Library/LaunchAgents/dev.galdr.daemon.plist");
+    assert!(plist.exists(), "the LaunchAgent plist must be written");
+    let body = std::fs::read_to_string(&plist).unwrap();
+    assert!(body.contains("<string>dev.galdr.daemon</string>"), "{body}");
+    assert!(
+        body.contains(bin()),
+        "plist must point at this binary: {body}"
+    );
+    assert!(body.contains("<string>daemon</string>"), "{body}");
+    assert!(body.contains("<key>KeepAlive</key>"), "{body}");
+    assert!(body.contains("<key>RunAtLoad</key>"), "{body}");
+    // The log directory was created, and a first install bootstraps the job.
+    assert!(sb.home().join(".galdr/logs").is_dir(), "log dir must exist");
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("bootstrap"), "expected bootstrap: {logged}");
+
+    // status now reports it as managed (plist present + the probe exits 0).
+    let status = sb
+        .cmd()
+        .env("GALDR_LAUNCHCTL", &launchctl)
+        .args(["daemon", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&status).contains("launchd: managed"),
+        "{}",
+        stdout(&status)
+    );
+
+    // uninstall unloads the job and removes the plist, but leaves logs/state.
+    let uninstall = sb
+        .cmd()
+        .env("GALDR_LAUNCHCTL", &launchctl)
+        .args(["daemon", "uninstall"])
+        .output()
+        .unwrap();
+    assert!(uninstall.status.success(), "{}", stderr(&uninstall));
+    assert!(!plist.exists(), "the plist must be removed on uninstall");
+    assert!(
+        sb.home().join(".galdr/logs").is_dir(),
+        "uninstall must not delete logs/state"
+    );
+    let logged = std::fs::read_to_string(&log).unwrap();
+    assert!(logged.contains("bootout"), "expected bootout: {logged}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn daemon_status_reports_unmanaged_without_a_launchagent() {
+    // No plist installed → unmanaged, and (by design) launchctl is never invoked, so
+    // the check stays hermetic without any stand-in.
+    let sb = Sandbox::new();
+    let status = sb.run(&["daemon", "status"]);
+    assert!(status.status.success());
+    assert!(
+        stdout(&status).contains("launchd: unmanaged"),
+        "{}",
+        stdout(&status)
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn daemon_install_is_macos_only() {
+    // launchd is macOS-only: the subcommand must fail with a clear message elsewhere.
+    let sb = Sandbox::new();
+    let out = sb.run(&["daemon", "install"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("macOS-only"), "{}", stderr(&out));
 }

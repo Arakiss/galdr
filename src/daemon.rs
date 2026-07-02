@@ -67,6 +67,21 @@ fn already_running() -> bool {
     matches!(ipc::query(&Request::Ping), Ok(Response::Pong { .. }))
 }
 
+/// Asks a running daemon to shut down and waits (briefly) for it to release the
+/// control socket. Best-effort: returns once the daemon stops answering or the wait
+/// elapses. Shared by `galdr upgrade` (relaunch a stale daemon) and `galdr daemon
+/// install` (stop a loose nohup daemon before handing the socket to launchd), so a
+/// relaunch never races the old instance for the single-instance socket.
+pub fn stop_and_wait() {
+    let _ = ipc::query(&Request::Shutdown);
+    for _ in 0..40 {
+        if ipc::query(&Request::Ping).is_err() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Re-exec `galdr daemon` detached: own process group, null stdio. Dependency-free
 /// (no libc); good enough for a CLI-launched background daemon.
 ///

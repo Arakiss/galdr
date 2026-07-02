@@ -40,7 +40,10 @@ pub fn run() -> Result<()> {
     }
 
     match ipc::query(&ipc::Request::Ping) {
-        Ok(ipc::Response::Pong { version }) => report_daemon_version(version.as_deref()),
+        Ok(ipc::Response::Pong { version }) => {
+            report_daemon_version(version.as_deref());
+            report_daemon_management();
+        }
         _ => warn("daemon is not running; CLI fallbacks will be used"),
     }
 
@@ -180,6 +183,20 @@ fn report_daemon_version(daemon_version: Option<&str>) {
         None => warn(format!(
             "daemon is running but did not report its version (older daemon), CLI is v{cli} — restart it: galdr daemon stop && galdr daemon"
         )),
+    }
+}
+
+/// Reports whether launchd manages the running daemon (macOS only). A managed daemon
+/// survives logout and reboots; a loose (nohup) one silently dies and can go stale, so
+/// that gets an informational note with the fix — never a failure, and nothing at all
+/// off macOS, where there is no launchd.
+fn report_daemon_management() {
+    match crate::launchd::management() {
+        Some(true) => ok("daemon is managed by launchd (auto-starts at login, restarts on crash)"),
+        Some(false) => note(
+            "daemon runs unmanaged (no LaunchAgent); run `galdr daemon install` to auto-start it and survive reboots",
+        ),
+        None => {}
     }
 }
 
