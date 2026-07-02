@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.16.0](https://github.com/Arakiss/galdr/compare/v0.15.0...v0.16.0) (2026-07-02)
+
+
+### Features
+
+* add galdr rm — unlink + retire a skill ([e1ba7d0](https://github.com/Arakiss/galdr/commit/e1ba7d069d59d7168ab98641e2fe5fccbe4e79a7))
+* **daemon:** launchd lifecycle — install/uninstall/managed status ([4401783](https://github.com/Arakiss/galdr/commit/440178390942f108cd18cb637a5051558da48341))
+* **doctor:** surface available updates ([8ce3ac8](https://github.com/Arakiss/galdr/commit/8ce3ac8dff01c6625f1062ec9e4a91ed2a94fe9f))
+* **doctor:** warn on CLI/daemon version skew ([4aa2d40](https://github.com/Arakiss/galdr/commit/4aa2d40b93c1c6be80cfb55a7ef4c1fff154ac1b))
+* **rec:** concurrent per-session recordings ([1f495df](https://github.com/Arakiss/galdr/commit/1f495df1faac002c78adfce4bbdc11ba69467d29))
+* **upgrade:** add galdr upgrade with crates.io check ([05194fc](https://github.com/Arakiss/galdr/commit/05194fc8fc3f7fb5c097ca33cac214a222341e3c))
+
+
+### Bug fixes
+
+* **distill:** honor frontmatter name with --from ([dd14246](https://github.com/Arakiss/galdr/commit/dd14246ba66a3bec9a7b7b814ee74ea9f079395b))
+* **release:** drop empty ${component} from release PR title patterns ([bd9a8cf](https://github.com/Arakiss/galdr/commit/bd9a8cf440aa26dfda7a7df3b49346f9fa2b8451))
+
 ## [0.15.0](https://github.com/Arakiss/galdr/compare/v0.14.2...v0.15.0) (2026-06-30)
 
 
