@@ -34,7 +34,7 @@ pub fn run() -> Result<()> {
     }
 
     match ipc::query(&ipc::Request::Ping) {
-        Ok(ipc::Response::Pong) => ok("daemon is running"),
+        Ok(ipc::Response::Pong { version }) => report_daemon_version(version.as_deref()),
         _ => warn("daemon is not running; CLI fallbacks will be used"),
     }
 
@@ -134,6 +134,24 @@ pub fn run() -> Result<()> {
         Ok(())
     } else {
         bail!("doctor found {} actionable issue(s)", issues.len())
+    }
+}
+
+/// Compares the running daemon's version with this CLI's. A daemon left running from
+/// an older binary keeps serving stale behavior over the socket while `doctor` used to
+/// report only "daemon is running"; now the skew is surfaced with the exact remedy. A
+/// warning, not an error (the fallbacks still work): restarting the daemon is the fix.
+/// An older daemon predating the version field reports `None` — unknown, so warn too.
+fn report_daemon_version(daemon_version: Option<&str>) {
+    let cli = env!("CARGO_PKG_VERSION");
+    match daemon_version {
+        Some(v) if v == cli => ok(format!("daemon is running (version {v})")),
+        Some(v) => warn(format!(
+            "daemon is v{v}, CLI is v{cli} — restart it: galdr daemon stop && galdr daemon"
+        )),
+        None => warn(format!(
+            "daemon is running but did not report its version (older daemon), CLI is v{cli} — restart it: galdr daemon stop && galdr daemon"
+        )),
     }
 }
 

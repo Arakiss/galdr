@@ -1816,7 +1816,14 @@ fn daemon_indexes_and_answers_queries() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     assert!(ready, "daemon socket never appeared");
-    assert!(stdout(&sb.run(&["daemon", "status"])).contains("daemon running"));
+    let status = stdout(&sb.run(&["daemon", "status"]));
+    assert!(status.contains("daemon running"));
+    // The daemon reports its version over the socket (so a stale daemon left running
+    // from an older binary is detectable); it matches this build's version.
+    assert!(
+        status.contains(&format!("version: {}", env!("CARGO_PKG_VERSION"))),
+        "daemon status should print the version: {status}"
+    );
 
     sb.record("daemon demo", &[BASH_STATUS]);
     // Give the close notification a moment to be indexed.

@@ -67,8 +67,16 @@ fn default_skill_status() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Response {
-    /// Reply to `Ping`.
-    Pong,
+    /// Reply to `Ping`. Carries the daemon's version (captured from
+    /// `CARGO_PKG_VERSION` when the daemon binary was compiled) so the CLI can flag
+    /// a daemon left running from an older binary — the skew `galdr doctor` warns
+    /// about. A daemon predating this field answers a bare `{"type":"Pong"}`, which
+    /// `#[serde(default)]` deserializes to `version: None`: an unknown version the
+    /// CLI treats as "warn to be safe".
+    Pong {
+        #[serde(default)]
+        version: Option<String>,
+    },
     /// Generic success with no payload (notifications, shutdown).
     Ack,
     /// Reply to `ListRecordings`.
@@ -153,6 +161,30 @@ mod tests {
         let line = serde_json::to_string(&resp).unwrap();
         let back: Response = serde_json::from_str(&line).unwrap();
         assert!(matches!(back, Response::Error { .. }));
+    }
+
+    #[test]
+    fn pong_carries_the_daemon_version() {
+        let resp = Response::Pong {
+            version: Some("0.15.0".into()),
+        };
+        let line = serde_json::to_string(&resp).unwrap();
+        assert!(line.contains("\"version\":\"0.15.0\""));
+        match serde_json::from_str::<Response>(&line).unwrap() {
+            Response::Pong { version } => assert_eq!(version.as_deref(), Some("0.15.0")),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_old_pong_without_a_version_deserializes_to_none() {
+        // A daemon left running from a build predating the version field answers a bare
+        // `Pong`. It must still parse — as an unknown version, which the CLI warns about
+        // rather than crashing on.
+        match serde_json::from_str::<Response>("{\"type\":\"Pong\"}").unwrap() {
+            Response::Pong { version } => assert_eq!(version, None),
+            other => panic!("wrong variant: {other:?}"),
+        }
     }
 
     #[test]

@@ -640,8 +640,12 @@ fn cmd_rec_status() -> anyhow::Result<()> {
 
 fn cmd_daemon_status() -> anyhow::Result<()> {
     match ipc::query(&ipc::Request::Ping) {
-        Ok(ipc::Response::Pong) => {
+        Ok(ipc::Response::Pong { version }) => {
             println!("daemon running");
+            match version.as_deref() {
+                Some(v) => println!("  version: {v}"),
+                None => println!("  version: unknown (older daemon; restart to report it)"),
+            }
             if let Ok(pid) = std::fs::read_to_string(paths::pidfile()?) {
                 println!("  pid: {}", pid.trim());
             }

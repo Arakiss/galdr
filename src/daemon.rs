@@ -64,7 +64,7 @@ pub fn run(detach: bool) -> Result<()> {
 /// `Pong` over the socket means a live daemon owns it. Any error (connection
 /// refused, missing socket) means it is free to take.
 fn already_running() -> bool {
-    matches!(ipc::query(&Request::Ping), Ok(Response::Pong))
+    matches!(ipc::query(&Request::Ping), Ok(Response::Pong { .. }))
 }
 
 /// Re-exec `galdr daemon` detached: own process group, null stdio. Dependency-free
@@ -224,7 +224,11 @@ async fn process_conn(stream: UnixStream, db: Db, shutdown: Arc<Notify>) -> Resu
 
 fn handle_request(db: &Db, req: Request) -> Response {
     match req {
-        Request::Ping => Response::Pong,
+        Request::Ping => Response::Pong {
+            // Captured when this daemon binary was compiled, so the CLI can detect a
+            // daemon still running from an older build after an upgrade.
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        },
         Request::Shutdown => Response::Ack,
         Request::EventAppended { rec_id, event } => with_db(db, |c| {
             catalog::index_event(c, &rec_id, event.as_ref()).map(|()| Response::Ack)
