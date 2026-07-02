@@ -304,6 +304,65 @@ fn report_validation(skills: &[catalog::SkillRow]) {
     }
 }
 
+/// `galdr doctor --json` — a focused, machine-readable health summary an agent can read
+/// to self-diagnose, instead of scraping the human `doctor` text. Deliberately a curated
+/// subset (the things an agent acts on), not every line the text report prints.
+pub fn run_json() -> Result<()> {
+    let mut issues: Vec<String> = Vec::new();
+
+    let (daemon_running, daemon_version) = match ipc::query(&ipc::Request::Ping) {
+        Ok(ipc::Response::Pong { version }) => (true, version),
+        _ => (false, None),
+    };
+    let cli_version = env!("CARGO_PKG_VERSION");
+    let daemon_skew = daemon_running && daemon_version.as_deref() != Some(cli_version);
+
+    let skill_installed = crate::skill::installed_version();
+    let skill_current = crate::skill::is_current();
+    if skill_installed.is_none() {
+        issues.push("galdr skill not installed".into());
+    } else if !skill_current {
+        issues.push("galdr skill is stale".into());
+    }
+
+    let claude_hook = setup::claude_hook_configured();
+    if claude_hook == Some(false) {
+        issues.push("Claude Code hook is missing".into());
+    }
+
+    let update = match crate::upgrade::check_latest() {
+        Ok(crate::upgrade::LatestCheck::Newer { latest, .. }) => Some(latest.to_string()),
+        _ => None,
+    };
+
+    let mac = observe_mac::mac_permissions();
+
+    let report = serde_json::json!({
+        "ok": issues.is_empty(),
+        "cli_version": cli_version,
+        "daemon": {
+            "running": daemon_running,
+            "version": daemon_version,
+            "skew": daemon_skew,
+            "launchd_managed": crate::launchd::management(),
+        },
+        "skill": {
+            "installed": skill_installed.is_some(),
+            "version": skill_installed,
+            "current": skill_current,
+        },
+        "claude_hook_configured": claude_hook,
+        "macos_observe": mac.map(|p| serde_json::json!({
+            "input_monitoring": p.input_monitoring,
+            "accessibility": p.accessibility,
+        })),
+        "update_available": update,
+        "issues": issues,
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 /// Reports the two TCC permissions the native macOS observe lane needs. Nothing off
 /// macOS (no `observe mac` there). Never an error: without the grants, `observe mac`
 /// simply can't run (Input Monitoring) or degrades to coordinate-only (Accessibility),

@@ -91,6 +91,11 @@ This skill teaches you how to drive galdr. It ships with galdr and is regenerate
 - The task involves driving a GUI through Computer Use — those clicks, types, and
   screenshots are tool calls too, so galdr records them (keeping the action, dropping
   the screenshot) and distills them into a semantic GUI skill.
+- The workflow lives only behind a GUI a **person** drives, not you — a desktop app or a
+  site you can't reach through tool calls. The user can *demonstrate* it while galdr
+  observes (`galdr observe browser` or `galdr observe mac`), and you distill that demo
+  into a skill exactly like any recording. Offer this when a user says a task is easier to
+  show than to describe.
 
 Do not use for one-off throwaway work, or for secret-heavy sessions unless asked.
 
@@ -154,8 +159,18 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
   paths, dangerous commands), practicality (a real, complete skill), and optimization
   (a precise description, no recording noise). Exits non-zero if anything blocks. Add
   `--strict` to also treat warnings (documented dangers, a weak description) as blocking.
-- `galdr doctor` — diagnose config, catalog, sensor wiring, and skill discoverability.
-  It also flags any installed skill that would fail the content gate.
+- `galdr observe browser start <name> --url <url>` / `galdr observe mac start <name>`
+  (macOS) — record a **human** demonstration of a GUI-only workflow (no API or CLI to
+  drive) as semantic human events: browser navigation/clicks/forms through a local CDP
+  sensor, or native macOS clicks/scrolls/keys with the clicked element's accessibility
+  context (role, label, window, app). Typed content is redacted or never captured and no
+  screenshots are taken. Stop with `galdr observe browser stop` / `galdr observe mac stop`,
+  then `galdr distill` it like any recording. Reach for this when the user offers to *show*
+  you a UI task instead of describing it.
+- `galdr doctor [--json]` — diagnose config, catalog, sensor wiring, and skill
+  discoverability; it also flags any installed skill that would fail the content gate.
+  `--json` emits a compact health summary (daemon, skill, hook, macOS permissions, updates)
+  so you can self-diagnose without scraping the text.
 
 ## Steps (the recipe, generalized)
 

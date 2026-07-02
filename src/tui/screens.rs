@@ -37,10 +37,11 @@ fn render_tabbar<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
     for (i, tab) in Panel::ALL.iter().enumerate() {
         let label = format!("{} {}", i + 1, tab.label());
         if *tab == app.focus {
-            spans.push(Span::styled(format!(" [ {label} ] "), theme::title()));
+            spans.push(Span::styled(format!(" {label} "), theme::tab_active()));
         } else {
-            spans.push(Span::styled(format!("  {label}  "), theme::dim()));
+            spans.push(Span::styled(format!(" {label} "), theme::dim()));
         }
+        spans.push(Span::raw(" "));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -77,10 +78,11 @@ fn block_focused(title: &str, focused: bool) -> Block<'static> {
     let border = if focused {
         theme::title()
     } else {
-        theme::dim()
+        theme::faint()
     };
     Block::default()
         .borders(Borders::ALL)
+        .border_type(theme::BORDER)
         .border_style(border)
         .title(Span::styled(format!(" {title} "), theme::title()))
 }
@@ -160,7 +162,8 @@ fn render_harness_preview<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C
 fn block(title: &str) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
-        .border_style(theme::dim())
+        .border_type(theme::BORDER)
+        .border_style(theme::faint())
         .title(Span::styled(format!(" {title} "), theme::title()))
 }
 
@@ -353,8 +356,27 @@ fn render_status<C: Catalog>(frame: &mut Frame, area: Rect, app: &App<C>) {
             theme::warn(),
         ));
     }
-    spans.push(Span::styled(hints, theme::dim()));
+    spans.extend(styled_hints(hints));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Renders a `"key action · key action"` keybar with the key of each segment accented
+/// and the rest dim, so the shortcuts read at a glance instead of a flat gray run.
+fn styled_hints(hints: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    for (i, seg) in hints.split(" · ").enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", theme::faint()));
+        }
+        match seg.split_once(' ') {
+            Some((key, rest)) => {
+                spans.push(Span::styled(key.to_string(), theme::accent()));
+                spans.push(Span::styled(format!(" {rest}"), theme::dim()));
+            }
+            None => spans.push(Span::styled(seg.to_string(), theme::accent())),
+        }
+    }
+    spans
 }
 
 // ── Recordings ──────────────────────────────────────────────────────────────
@@ -404,6 +426,7 @@ fn render_recordings<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
+        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(
             &format!("Recordings · {}", app.rec_view.len()),
@@ -495,6 +518,7 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
+        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(&steps_title, focused));
     frame.render_stateful_widget(table, chunks[1], &mut app.detail_state);
@@ -559,6 +583,7 @@ fn render_skills<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>, fo
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
+        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(
             &format!("Skills · {g} galdr · {} ext", app.skills.len() - g),
@@ -606,6 +631,7 @@ fn render_harnesses<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>,
     let table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::selected())
+        .highlight_symbol(theme::CURSOR)
         .highlight_symbol("▌ ")
         .block(block_focused(&format!("Harnesses · {detected}"), focused));
     frame.render_stateful_widget(table, area, &mut app.harness_state);

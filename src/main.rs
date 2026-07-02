@@ -224,7 +224,11 @@ enum Commands {
     },
 
     /// Diagnose local galdr installation, catalog, config, and hook wiring.
-    Doctor,
+    Doctor {
+        /// Emit a machine-readable health summary for an agent to self-diagnose.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Check for and install a newer galdr from crates.io.
     ///
@@ -647,7 +651,13 @@ fn main() {
             strict,
             json,
         )),
-        Commands::Doctor => exit_on_error(doctor::run()),
+        Commands::Doctor { json } => {
+            if json {
+                exit_on_error(doctor::run_json())
+            } else {
+                exit_on_error(doctor::run())
+            }
+        }
         Commands::Upgrade { check, from } => match upgrade::run(check, from) {
             Ok(code) => std::process::exit(code),
             Err(err) => {
