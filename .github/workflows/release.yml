@@ -81,9 +81,18 @@ jobs:
             exit 0
           fi
 
-          echo "::warning::Merged release PR #${pr_number} is still untagged (${tag} at ${pr_sha})."
-          echo "::warning::The repository token cannot create releases in this repo; recover this with a user-approved release cut, then rerun the release workflow."
-          echo "Pending release PR: ${pr_title}"
+          if git ls-remote --exit-code --tags "https://github.com/${repo}.git" "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} exists but release does not yet — a build is presumably in flight; not dispatching again."
+            exit 0
+          fi
+          echo "::warning::Merged release PR #${pr_number} is untagged (${tag} at ${pr_sha}); self-healing."
+          # GITHUB_TOKEN can create the ref, but events from refs it creates do
+          # not trigger workflows (GitHub anti-recursion). So create the tag and
+          # dispatch the tag build explicitly, from the tag ref itself so release
+          # signatures verify against the right run identity.
+          gh api "repos/${repo}/git/refs" -f ref="refs/tags/${tag}" -f sha="${pr_sha}" >/dev/null
+          gh workflow run release.yml --repo "${repo}" --ref "${tag}" -f tag="${tag}"
+          echo "Self-heal: created ${tag} and dispatched the tag build (binaries + release + crate)."
           exit 0
       - id: release
         uses: googleapis/release-please-action@v5
