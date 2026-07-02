@@ -57,6 +57,34 @@ impl LinkStatus {
     }
 }
 
+/// The outcome of unlinking one skill from one harness — the inverse of [`LinkResult`],
+/// used when a skill is retired (`galdr rm`).
+#[derive(Debug, Clone, Serialize)]
+pub struct UnlinkResult {
+    pub harness: String,
+    pub skill: String,
+    /// The harness path that pointed (or would have pointed) at the skill.
+    pub link_path: String,
+    pub status: UnlinkStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnlinkStatus {
+    /// Our symlink to the canonical skill was verified and removed.
+    Unlinked,
+    /// Nothing was there to remove.
+    Absent,
+    /// The harness's skills dir *is* the canonical root — the skill lives there, not
+    /// as a separate link; retiring the directory itself handles it.
+    SameRoot,
+    /// A path is present but is not our symlink to *this* skill (a real dir, or a
+    /// symlink pointing elsewhere); left untouched.
+    Foreign,
+    /// The symlink could not be removed (e.g. permissions).
+    Failed,
+}
+
 /// Links one installed skill into every detected harness whose skills directory
 /// galdr knows. Returns one result per harness considered; harnesses that are not
 /// installed, or whose skills location is unknown, are skipped silently.
@@ -110,6 +138,64 @@ pub fn link_all(all: bool) -> Result<Vec<LinkResult>> {
         results.extend(link_skill(&name)?);
     }
     Ok(results)
+}
+
+/// Removes one installed skill's symlink from every detected harness. The inverse of
+/// [`link_skill`]: for each harness it removes the symlink only when it truly points at
+/// this skill's canonical directory, never a real file or a link the user aimed
+/// elsewhere. Returns one result per harness considered.
+pub fn unlink_skill(skill_name: &str) -> Result<Vec<UnlinkResult>> {
+    let canonical = paths::skill_dir(skill_name)?;
+    let mut results = Vec::new();
+    for info in harness::detect() {
+        if !info.detected {
+            continue;
+        }
+        let Some(target_dir) = harness::skills_dir(&info.key) else {
+            continue; // galdr doesn't know this harness's skills dir
+        };
+        results.push(unlink_from(&info.name, skill_name, &canonical, &target_dir));
+    }
+    Ok(results)
+}
+
+fn unlink_from(
+    harness_name: &str,
+    skill: &str,
+    canonical: &Path,
+    target_dir: &Path,
+) -> UnlinkResult {
+    let link_path = target_dir.join(skill);
+    let mk = |status| UnlinkResult {
+        harness: harness_name.to_string(),
+        skill: skill.to_string(),
+        link_path: link_path.display().to_string(),
+        status,
+    };
+
+    // The harness loads from the canonical root itself: there is no separate link to
+    // remove — retiring the skill directory is what takes it away here.
+    if same_dir(target_dir, canonical.parent().unwrap_or(canonical)) {
+        return mk(UnlinkStatus::SameRoot);
+    }
+
+    match std::fs::symlink_metadata(&link_path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            // Only remove a symlink we can prove points at *this* skill's canonical dir;
+            // a link the user aimed elsewhere is not ours to touch.
+            match std::fs::read_link(&link_path) {
+                Ok(dest) if same_dir(&dest, canonical) => match std::fs::remove_file(&link_path) {
+                    Ok(()) => mk(UnlinkStatus::Unlinked),
+                    Err(_) => mk(UnlinkStatus::Failed),
+                },
+                _ => mk(UnlinkStatus::Foreign),
+            }
+        }
+        // A real directory or file is there — never the symlink we created.
+        Ok(_) => mk(UnlinkStatus::Foreign),
+        // Nothing there.
+        Err(_) => mk(UnlinkStatus::Absent),
+    }
 }
 
 fn link_into(harness_name: &str, skill: &str, canonical: &Path, target_dir: &Path) -> LinkResult {

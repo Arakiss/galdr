@@ -591,6 +591,107 @@ fn link_rejects_path_traversal_in_skill_name() {
 }
 
 #[test]
+fn rm_retires_a_skill_unlinking_and_moving_it() {
+    // The full lifecycle: `galdr rm` unlinks the skill from every harness, moves its
+    // directory into .retired (never a hard delete), and refreshes the catalog so it
+    // drops out of `galdr skills`.
+    let sb = Sandbox::new();
+    std::fs::create_dir_all(sb.home().join(".claude/skills")).unwrap();
+
+    let id = sb.record("retire me", &[BASH_STATUS]);
+    assert!(sb.run(&["distill", &id, "--fast"]).status.success());
+
+    let link = sb.home().join(".claude/skills/galdr-retire-me");
+    assert!(link.exists(), "the skill should be linked into the harness");
+    assert!(stdout(&sb.run(&["skills"])).contains("galdr-retire-me"));
+
+    let rm = sb.run(&["rm", "galdr-retire-me", "--force"]);
+    assert!(rm.status.success(), "{}", stderr(&rm));
+    let said = stdout(&rm);
+    assert!(
+        said.contains("Unlinked"),
+        "reports what it unlinked: {said}"
+    );
+    assert!(said.contains("retired 'galdr-retire-me'"), "{said}");
+
+    // The harness symlink is gone (and does not dangle).
+    assert!(
+        sb.home()
+            .join(".claude/skills/galdr-retire-me")
+            .symlink_metadata()
+            .is_err(),
+        "the harness symlink must be removed"
+    );
+    // The canonical directory left the active root for .retired.
+    assert!(!sb.home().join(".agents/skills/galdr-retire-me").exists());
+    assert!(
+        sb.home()
+            .join(".agents/skills/.retired/galdr-retire-me/SKILL.md")
+            .exists(),
+        "the skill should be moved to .retired, not deleted"
+    );
+    // The refreshed catalog no longer lists it.
+    let listing = stdout(&sb.run(&["skills"]));
+    assert!(
+        !listing.contains("galdr-retire-me"),
+        "a retired skill must drop out of the catalog: {listing}"
+    );
+}
+
+#[test]
+fn rm_of_a_missing_skill_fails_clearly() {
+    let sb = Sandbox::new();
+    let out = sb.run(&["rm", "does-not-exist", "--force"]);
+    assert!(!out.status.success(), "removing a missing skill must fail");
+    assert!(stderr(&out).contains("not installed"), "{}", stderr(&out));
+}
+
+#[test]
+fn rm_without_force_refuses_in_a_non_interactive_context() {
+    // Tests run with no TTY. Without --force the retire must refuse (a serious CLI does
+    // not mutate on a non-interactive run without an explicit opt-in) and change nothing.
+    let sb = Sandbox::new();
+    let id = sb.record("keep unless forced", &[BASH_STATUS]);
+    assert!(sb.run(&["distill", &id, "--fast"]).status.success());
+
+    let out = sb.run(&["rm", "galdr-keep-unless-forced"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--force"), "{}", stderr(&out));
+    assert!(
+        sb.home()
+            .join(".agents/skills/galdr-keep-unless-forced/SKILL.md")
+            .exists(),
+        "a refused retire must leave the skill in place"
+    );
+}
+
+#[test]
+fn rm_suffixes_a_retired_name_that_already_exists() {
+    // Retiring two skills that share a name must not clobber the earlier copy: the
+    // second lands on a numeric suffix under .retired.
+    let sb = Sandbox::new();
+    let first = sb.record("twice", &[BASH_STATUS]);
+    assert!(sb.run(&["distill", &first, "--fast"]).status.success());
+    assert!(sb.run(&["rm", "galdr-twice", "--force"]).status.success());
+
+    let second = sb.record("twice", &[BASH_STATUS]);
+    assert!(sb.run(&["distill", &second, "--fast"]).status.success());
+    assert!(sb.run(&["rm", "galdr-twice", "--force"]).status.success());
+
+    assert!(
+        sb.home()
+            .join(".agents/skills/.retired/galdr-twice/SKILL.md")
+            .exists()
+    );
+    assert!(
+        sb.home()
+            .join(".agents/skills/.retired/galdr-twice.1/SKILL.md")
+            .exists(),
+        "the second retirement of the same name must be suffixed"
+    );
+}
+
+#[test]
 fn export_redact_scrubs_secrets_from_every_file_not_just_raw() {
     // The worst redaction bug: --redact scrubbed raw.redacted.jsonl but left the
     // secret in steps.md (the Bash command summary). It must scrub all files.

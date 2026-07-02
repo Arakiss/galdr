@@ -23,6 +23,7 @@ mod outcome;
 mod parametrize;
 mod paths;
 mod record;
+mod remove;
 mod setup;
 mod skill;
 mod span;
@@ -145,6 +146,20 @@ enum Commands {
         /// Emit machine-readable JSON instead of a table.
         #[arg(long)]
         json: bool,
+    },
+
+    /// Retire a skill: unlink it from every harness and move it aside (reversible).
+    ///
+    /// Removes the symlinks `galdr link` created (only those that truly point at this
+    /// skill), moves the skill's directory into `~/.agents/skills/.retired/` — never a
+    /// hard delete — and refreshes the catalog. Asks for confirmation at a TTY; use
+    /// `--force` to skip it (required in a non-interactive context).
+    Rm {
+        /// The skill to retire (its directory name under the skills root).
+        skill: String,
+        /// Skip the interactive confirmation (required when there is no TTY).
+        #[arg(long)]
+        force: bool,
     },
 
     /// List skill evaluator outputs from the catalog.
@@ -531,6 +546,7 @@ fn main() {
         Commands::Skills { json } => exit_on_error(cmd_skills(json)),
         Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
         Commands::Link { skill, all, json } => exit_on_error(cmd_link(skill.as_deref(), all, json)),
+        Commands::Rm { skill, force } => exit_on_error(remove::run(&skill, force)),
         Commands::Evaluations { skill, json } => {
             exit_on_error(cmd_evaluations(skill.as_deref(), json))
         }
