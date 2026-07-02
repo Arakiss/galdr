@@ -408,7 +408,7 @@ mod sensor {
     use std::ptr::NonNull;
 
     use anyhow::{Context, Result, bail};
-    use objc2_core_foundation::{CFMachPort, CFRunLoop, Type, kCFRunLoopCommonModes};
+    use objc2_core_foundation::{CFMachPort, CFRetained, CFRunLoop, Type, kCFRunLoopCommonModes};
     use objc2_core_graphics::{
         CGEvent, CGEventField, CGEventMask, CGEventTapLocation, CGEventTapOptions,
         CGEventTapPlacement, CGEventTapProxy, CGEventType, CGPreflightListenEventAccess,
@@ -583,28 +583,39 @@ mod sensor {
         run_loop.add_source(Some(&source), mode);
         CGEvent::tap_enable(&tap, true);
 
-        // A watcher stops the run loop when the stop flag appears. The run loop is
-        // thread-bound, so we hand the watcher a thread-safe wake handle.
-        spawn_stop_watcher(stop_flag.to_path_buf(), log_file.to_path_buf(), &run_loop);
+        // A watcher stops the run loop when the stop flag appears and re-arms the tap
+        // if the system disabled it. The run loop is thread-bound, so we hand the
+        // watcher retained, Send-asserted handles rather than borrows.
+        let _ = log_file;
+        spawn_watcher(stop_flag.to_path_buf(), &run_loop, &tap);
 
         CFRunLoop::run();
         Ok(())
     }
 
-    /// Poll for the stop flag on a helper thread and stop the (thread-bound) run loop.
-    fn spawn_stop_watcher(
+    /// Watch, on a helper thread: stop the (thread-bound) run loop when the stop flag
+    /// appears, and re-enable the tap if it went quiet. The callback already re-arms on
+    /// `TapDisabledByTimeout`, but a tap can also die across sleep/wake *without* firing
+    /// that callback — robust taps poll `CGEventTapIsEnabled` on a timer. This is that
+    /// poll, folded into the stop watcher we already run.
+    fn spawn_watcher(
         stop_flag: std::path::PathBuf,
-        _log: std::path::PathBuf,
         run_loop: &CFRunLoop,
+        tap: &CFRetained<CFMachPort>,
     ) {
-        // Retain the run loop so the pointer stays valid on the watcher thread.
-        let handle = SendRunLoop(run_loop.retain());
+        // Retain both so the pointers stay valid on the watcher thread.
+        let run_loop = SendRunLoop(run_loop.retain());
+        let tap = SendTap(tap.retain());
         std::thread::spawn(move || {
-            let handle = handle;
+            let run_loop = run_loop;
+            let tap = tap;
             loop {
                 if stop_flag.exists() {
-                    handle.0.stop();
+                    run_loop.0.stop();
                     break;
+                }
+                if !CGEvent::tap_is_enabled(&tap.0) {
+                    CGEvent::tap_enable(&tap.0, true);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(150));
             }
@@ -613,9 +624,16 @@ mod sensor {
 
     /// A `CFRunLoop` handle we assert is safe to move to the watcher thread: the only
     /// call made across it is `CFRunLoopStop`, which is documented thread-safe.
-    struct SendRunLoop(objc2_core_foundation::CFRetained<CFRunLoop>);
+    struct SendRunLoop(CFRetained<CFRunLoop>);
     // SAFETY: CFRunLoopStop is explicitly safe to call from another thread.
     unsafe impl Send for SendRunLoop {}
+
+    /// A tap handle we assert is safe to move to the watcher thread: the only calls made
+    /// across it are `CGEventTapIsEnabled`/`CGEventTapEnable`, thin toggles of the tap's
+    /// window-server state that watchdog timers in other apps call the same way.
+    struct SendTap(CFRetained<CFMachPort>);
+    // SAFETY: the tap enable/is-enabled toggles are safe to call off the run loop thread.
+    unsafe impl Send for SendTap {}
 }
 
 #[cfg(not(target_os = "macos"))]
