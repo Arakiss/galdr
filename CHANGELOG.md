@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.17.0](https://github.com/Arakiss/galdr/compare/v0.16.1...v0.17.0) (2026-07-02)
+
+
+### Features
+
+* **doctor:** report macOS observe permissions; document the mac lane ([d201ff6](https://github.com/Arakiss/galdr/commit/d201ff6459acf6ded5174479af4e03faab969cdf))
+* **sensor:** hard privacy gate — never capture keys under secure input (phase 3) ([94c6e71](https://github.com/Arakiss/galdr/commit/94c6e716aba359af1a01b410f0ca2a02fc3550bf))
+* **sensor:** native macOS observation lane — CGEventTap → span (phase 1) ([3e6b677](https://github.com/Arakiss/galdr/commit/3e6b6776322342ca3e096080ddd4ecf47d43ce11))
+* **sensor:** resolve accessibility context for macOS clicks (phase 2) ([6498a3e](https://github.com/Arakiss/galdr/commit/6498a3e67cba831a3a990dbefec4ff893492b13f))
+
+
+### Bug fixes
+
+* **release:** self-heal survives search-index lag and versionless PR titles ([b2f3c04](https://github.com/Arakiss/galdr/commit/b2f3c0455d279c6ede1d985814cfe8750f257598))
+* **sensor:** close 10 findings from the adversarial FFI review ([e197cbd](https://github.com/Arakiss/galdr/commit/e197cbdef4054cc08da84fc5ff7f926914a0a02f))
+* **sensor:** re-arm the macOS tap across sleep/wake, not just on timeout ([895f0c7](https://github.com/Arakiss/galdr/commit/895f0c7a6926f0d696131c0f00060fd96db5e6aa))
+
+
+### Documentation
+
+* README catches up with 0.16 — concurrent recordings, rm, upgrade, launchd daemon ([383eaf8](https://github.com/Arakiss/galdr/commit/383eaf8775eadb4e3fcbdec0743e594db42350f8))
+
 ## [0.16.1](https://github.com/Arakiss/galdr/compare/v0.16.0...v0.16.1) (2026-07-02)
 
 
