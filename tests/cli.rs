@@ -2078,14 +2078,28 @@ fn doctor_passes_when_claude_hook_is_configured() {
         r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"galdr hook"}]}]}}"#,
     )
     .unwrap();
-    let doctor = sb.run(&["doctor"]);
+    // Keep the update check hermetic: read the "index" from a local fixture pinned to
+    // this build's version, so doctor never touches the network and the update line is
+    // deterministic ("up to date").
+    let index = write_index_fixture(&sb, &[(env!("CARGO_PKG_VERSION"), false)]);
+    let doctor = sb
+        .cmd()
+        .env("GALDR_INDEX_FILE", &index)
+        .arg("doctor")
+        .output()
+        .unwrap();
     assert!(
         doctor.status.success(),
         "{}\n{}",
         stdout(&doctor),
         String::from_utf8_lossy(&doctor.stderr)
     );
-    assert!(stdout(&doctor).contains("doctor: ok"));
+    let said = stdout(&doctor);
+    assert!(said.contains("doctor: ok"));
+    assert!(
+        said.contains(&format!("up to date (v{})", env!("CARGO_PKG_VERSION"))),
+        "doctor should surface the update check: {said}"
+    );
 }
 
 #[test]

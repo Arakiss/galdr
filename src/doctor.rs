@@ -19,6 +19,12 @@ fn err(msg: impl AsRef<str>) {
     println!("{}  {}", style::red("err"), msg.as_ref());
 }
 
+/// A neutral, dimmed `note` status line: information, not a problem. Used for the
+/// offline update check, which must never read as a failure.
+fn note(msg: impl AsRef<str>) {
+    println!("{} {}", style::dim("note"), msg.as_ref());
+}
+
 pub fn run() -> Result<()> {
     let mut issues = Vec::new();
 
@@ -129,11 +135,33 @@ pub fn run() -> Result<()> {
         }
     }
 
+    report_update_check();
+
     if issues.is_empty() {
         println!("{}", style::green("doctor: ok"));
         Ok(())
     } else {
         bail!("doctor found {} actionable issue(s)", issues.len())
+    }
+}
+
+/// A fail-soft "is a newer galdr available?" line at the end of `doctor`. An explicit
+/// `doctor` run is allowed to touch the network (bounded by curl's 3s timeout), but
+/// the result is only ever informational: up-to-date is `ok`, an available update is
+/// `warn` with the remedy, and offline (or any check failure) is a `note` that never
+/// adds to the actionable-issue count. galdr never treats missing network as an error.
+fn report_update_check() {
+    match crate::upgrade::check_latest() {
+        Ok(crate::upgrade::LatestCheck::UpToDate { current }) => {
+            ok(format!("up to date (v{current})"))
+        }
+        Ok(crate::upgrade::LatestCheck::LocalAhead { current, latest }) => ok(format!(
+            "up to date (local v{current} ahead of crates.io v{latest})"
+        )),
+        Ok(crate::upgrade::LatestCheck::Newer { latest, .. }) => warn(format!(
+            "new version available: v{latest} — run galdr upgrade"
+        )),
+        Ok(crate::upgrade::LatestCheck::Offline) | Err(_) => note("update check skipped (offline)"),
     }
 }
 
