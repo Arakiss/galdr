@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.16.1](https://github.com/Arakiss/galdr/compare/v0.16.0...v0.16.1) (2026-07-02)
+
+
+### Bug fixes
+
+* **release:** self-heal untagged release PRs; use default release PR titles ([73d8339](https://github.com/Arakiss/galdr/commit/73d833907fc54786c29c325a13b2a89519311faf))
+
 ## [0.16.0](https://github.com/Arakiss/galdr/compare/v0.15.0...v0.16.0) (2026-07-02)
 
 
