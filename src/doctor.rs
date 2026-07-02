@@ -2,7 +2,7 @@
 
 use anyhow::{Result, bail};
 
-use crate::{catalog, config, ipc, paths, record, setup, style, validate};
+use crate::{catalog, config, ipc, observe_mac, paths, record, setup, style, validate};
 
 /// A green `ok` status line. The 4-char tag + a space keeps every line's text aligned.
 fn ok(msg: impl AsRef<str>) {
@@ -128,6 +128,8 @@ pub fn run() -> Result<()> {
             issues.push("Claude Code settings are unavailable".to_string());
         }
     }
+
+    report_mac_permissions();
 
     if let Ok(root) = paths::frames_root()
         && root.is_dir()
@@ -298,6 +300,30 @@ fn report_validation(skills: &[catalog::SkillRow]) {
         println!(
             "     {}",
             style::dim("fix or re-distill them; run `galdr validate <skill>` for the findings")
+        );
+    }
+}
+
+/// Reports the two TCC permissions the native macOS observe lane needs. Nothing off
+/// macOS (no `observe mac` there). Never an error: without the grants, `observe mac`
+/// simply can't run (Input Monitoring) or degrades to coordinate-only (Accessibility),
+/// and the fix is the user's to make in System Settings — so this informs, not fails.
+fn report_mac_permissions() {
+    let Some(perms) = observe_mac::mac_permissions() else {
+        return;
+    };
+    if perms.input_monitoring {
+        ok("Input Monitoring granted (macOS observe: keys/clicks/scroll)");
+    } else {
+        note(
+            "Input Monitoring not granted — `galdr observe mac` needs it. Grant it in System Settings → Privacy & Security → Input Monitoring (enable your terminal).",
+        );
+    }
+    if perms.accessibility {
+        ok("Accessibility granted (macOS observe: element role/name/window/app)");
+    } else {
+        note(
+            "Accessibility not granted — `galdr observe mac` clicks would be coordinate-only. Grant it in System Settings → Privacy & Security → Accessibility for semantic targeting.",
         );
     }
 }

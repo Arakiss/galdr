@@ -38,8 +38,16 @@ There is now a second human-observation lane for browser workflows:
 `galdr observe browser start <name> --url <url>` launches an isolated Chrome/Chromium
 profile, injects a local CDP sensor, and records navigation, clicks, form changes, and
 submits as semantic human events. Typed text is redacted by default; screenshots are not
-captured. Native macOS human demonstrations are still the next sensor, not a shipped
-claim.
+captured.
+
+And a third lane observes native macOS apps: `galdr observe mac start <name>` installs a
+listen-only event tap and records clicks, scrolls, and keystrokes. Each click carries the
+accessibility context of the element under the cursor — its role, label, window title, and
+owning app — so a distilled skill targets "the Send button", not a screen coordinate.
+**Keystroke content is never captured**: a key is recorded only as an occurrence, never its
+character or keycode, and capture is fully suspended whenever a secure input field (a
+password) is focused. No screenshots. The raw capture is folded into the immutable span and
+purged. It needs two macOS permissions (see below).
 
 ## Quickstart
 
@@ -74,6 +82,12 @@ prefix. Run `galdr` with no arguments for a one-screen overview of where you are
 
 - **`galdr observe browser`** — records a human-demonstrated browser workflow through a
   local CDP sensor, with typed values redacted and no screenshots by default.
+- **`galdr observe mac`** (macOS) — records a native app demonstration through a listen-only
+  event tap: clicks (with accessibility role/name/window/app), scrolls, and keystrokes as
+  occurrences with no content. Needs two permissions — **Input Monitoring** (for the tap) and
+  **Accessibility** (for element context) — granted in System Settings → Privacy & Security.
+  `galdr doctor` reports whether each is granted. As a source-built CLI, the grant goes to your
+  terminal, the same way tools like `skhd` and `yabai` are granted.
 - **`galdr suggest`** — finds repeated tasks (the same shape across recordings) worth a skill.
 - **`galdr bench`** — how reliably your skills replay, aggregated from the outcomes you record.
 - **`galdr tui`** — a terminal UI: an Overview dashboard, then tabs for recordings, skills,
@@ -124,13 +138,15 @@ each ships signed and checksummed (Sigstore + SHA-256) with an SBOM, for macOS a
 Shipped: the record → distill → replay loop with **author-by-default** distillation,
 **`galdr suggest`** and **`galdr bench`**, an **Overview-led TUI**, multi-harness skills and
 sensors (Claude Code, Codex, Cursor), **Human Browser Observe** for browser workflows,
-optional **vision-assisted authoring** (keep screenshots ephemerally so the authoring pass
-writes semantic GUI steps), a safe, redacted export path, **concurrent per-session
-recordings** for multi-agent setups, full skill lifecycle (**`galdr rm`**), and a CLI that
-maintains itself (**`galdr upgrade`**, launchd-managed daemon).
+**Native macOS Observe** (`galdr observe mac`) — clicks with accessibility context, scrolls,
+and content-free keystrokes behind Input Monitoring + Accessibility — optional
+**vision-assisted authoring** (keep screenshots ephemerally so the authoring pass writes
+semantic GUI steps), a safe, redacted export path, **concurrent per-session recordings** for
+multi-agent setups, full skill lifecycle (**`galdr rm`**), and a CLI that maintains itself
+(**`galdr upgrade`**, launchd-managed daemon).
 
-Next: a live end-to-end recording verified in each harness, native macOS human observation
-behind explicit permissions, and a multi-agent broker over the same model.
+Next: a live end-to-end recording verified in each harness, optional per-step screenshots for
+the macOS lane, and a multi-agent broker over the same model.
 
 ## Contributing
 
