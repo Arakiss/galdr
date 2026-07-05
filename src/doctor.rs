@@ -70,6 +70,9 @@ pub fn run() -> Result<()> {
             let skills = catalog::list_skills(&conn).unwrap_or_default();
             let usages = catalog::list_skill_usage(&conn, None).unwrap_or_default();
             let outcomes = catalog::list_skill_outcomes(&conn, None).unwrap_or_default();
+            let judgments = catalog::list_step_judgments(&conn, None).unwrap_or_default();
+            let regression_cases =
+                catalog::list_regression_base_cases(&conn, None).unwrap_or_default();
             let orphan_count = skills.iter().filter(|skill| skill.orphan).count();
             let draft_count = skills
                 .iter()
@@ -81,11 +84,13 @@ pub fn run() -> Result<()> {
                 })
                 .count();
             ok(format!(
-                "catalog rebuild check: {} recordings, {} skills, {} usages, {} outcomes",
+                "catalog rebuild check: {} recordings, {} skills, {} judgments, {} usages, {} outcomes, {} regression cases",
                 recordings.len(),
                 skills.len(),
+                judgments.len(),
                 usages.len(),
-                outcomes.len()
+                outcomes.len(),
+                regression_cases.len()
             ));
             if orphan_count > 0 {
                 warn(format!(

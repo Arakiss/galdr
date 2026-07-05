@@ -424,6 +424,20 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
     };
     let rec = &detail.recording;
     let chunks = Layout::vertical([Constraint::Length(5), Constraint::Min(1)]).split(area);
+    let judged_steps = detail
+        .steps
+        .iter()
+        .filter(|step| !step.judgments.is_empty())
+        .count();
+    let fork_steps = detail
+        .steps
+        .iter()
+        .filter(|step| {
+            step.judgments
+                .iter()
+                .any(|judgment| judgment.verdict == "fork")
+        })
+        .count();
 
     let meta = vec![
         Line::from(vec![
@@ -466,6 +480,18 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
                 format!("   ·   cwd: {}", rec.cwd.as_deref().unwrap_or("-")),
                 theme::dim(),
             ),
+            Span::styled(
+                if judged_steps > 0 {
+                    format!("   ·   judgments: {judged_steps} ({fork_steps} fork)")
+                } else {
+                    "   ·   judgments: none".to_string()
+                },
+                if fork_steps > 0 {
+                    theme::warn()
+                } else {
+                    theme::dim()
+                },
+            ),
         ]),
     ];
     frame.render_widget(Paragraph::new(meta).block(block("Inspector")), chunks[0]);
@@ -475,10 +501,21 @@ fn render_detail<C: Catalog>(frame: &mut Frame, area: Rect, app: &mut App<C>) {
         .steps
         .iter()
         .map(|s| {
+            let badge = if s
+                .judgments
+                .iter()
+                .any(|judgment| judgment.verdict == "fork")
+            {
+                "[fork] "
+            } else if s.judgments.iter().any(|judgment| judgment.verdict == "ok") {
+                "[ok] "
+            } else {
+                ""
+            };
             Row::new(vec![
                 Cell::from((s.seq + 1).to_string()),
                 Cell::from(Span::styled(s.tool_name.clone(), tool_style(&s.tool_name))),
-                Cell::from(s.summary.clone()),
+                Cell::from(format!("{badge}{}", s.summary)),
             ])
         })
         .collect();
@@ -847,6 +884,7 @@ mod tests {
                 event_kind: "tool_call".into(),
                 ts: "2026-06-19T10:00:01Z".into(),
                 summary: "git status".into(),
+                judgments: Vec::new(),
             }],
         };
         MockCatalog {
@@ -941,6 +979,7 @@ mod tests {
                     event_kind: "tool_call".into(),
                     ts: "t".into(),
                     summary: "cargo build".into(),
+                    judgments: Vec::new(),
                 },
                 StepRow {
                     seq: 1,
@@ -948,6 +987,7 @@ mod tests {
                     event_kind: "tool_call".into(),
                     ts: "t".into(),
                     summary: "galdr rec status".into(),
+                    judgments: Vec::new(),
                 },
             ],
         };

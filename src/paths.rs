@@ -9,7 +9,9 @@
 //! ├── galdrd.pid             daemon pidfile
 //! ├── catalog.sqlite         queryable index, rebuilt from spans/ + recordings/
 //! ├── spans/<rec_id>.jsonl   append-only span, one line per tool call
+//! ├── judgments/<rec_id>.jsonl append-only external per-step judgments
 //! ├── outcomes/*.jsonl       append-only skill usage and outcome labels
+//! ├── regression/base_cases.jsonl append-only skill regression base cases
 //! ├── observe/               active browser-observe sessions and local sensor files
 //! └── recordings/<rec_id>.json   metadata written when a recording is closed
 //! ```
@@ -98,6 +100,16 @@ pub fn recordings_dir() -> Result<PathBuf> {
     Ok(galdr_root()?.join("recordings"))
 }
 
+/// External per-step judgments directory: `~/.galdr/judgments`.
+pub fn judgments_dir() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("judgments"))
+}
+
+/// One recording's external per-step judgment log: `~/.galdr/judgments/<rec_id>.jsonl`.
+pub fn judgments_file(rec_id: &str) -> Result<PathBuf> {
+    Ok(judgments_dir()?.join(format!("{rec_id}.jsonl")))
+}
+
 /// Ephemeral authoring frames root: `~/.galdr/frames`. Opt-in (`capture.keep_frames`),
 /// never part of the span or a skill, purged when a final skill installs.
 pub fn frames_root() -> Result<PathBuf> {
@@ -112,6 +124,16 @@ pub fn frames_dir(rec_id: &str) -> Result<PathBuf> {
 /// Skill usage and outcome-label directory: `~/.galdr/outcomes`.
 pub fn outcomes_dir() -> Result<PathBuf> {
     Ok(galdr_root()?.join("outcomes"))
+}
+
+/// Skill regression guard root: `~/.galdr/regression`.
+pub fn regression_dir() -> Result<PathBuf> {
+    Ok(galdr_root()?.join("regression"))
+}
+
+/// Append-only regression base-case log: `~/.galdr/regression/base_cases.jsonl`.
+pub fn regression_base_cases_log() -> Result<PathBuf> {
+    Ok(regression_dir()?.join("base_cases.jsonl"))
 }
 
 /// Human-observation session root: `~/.galdr/observe`.
@@ -166,8 +188,10 @@ pub fn ensure_dirs() -> Result<()> {
     restrict_to_owner(&root);
     std::fs::create_dir_all(spans_dir()?)?;
     std::fs::create_dir_all(recordings_dir()?)?;
+    std::fs::create_dir_all(judgments_dir()?)?;
     std::fs::create_dir_all(active_dir()?)?;
     std::fs::create_dir_all(outcomes_dir()?)?;
+    std::fs::create_dir_all(regression_dir()?)?;
     std::fs::create_dir_all(observe_root()?)?;
     Ok(())
 }

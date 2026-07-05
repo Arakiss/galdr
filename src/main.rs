@@ -17,6 +17,7 @@ mod ext;
 mod harness;
 mod hook;
 mod ipc;
+mod judge;
 mod launchd;
 mod link;
 mod observe;
@@ -25,6 +26,7 @@ mod outcome;
 mod parametrize;
 mod paths;
 mod record;
+mod regression;
 mod remove;
 mod setup;
 mod skill;
@@ -36,6 +38,7 @@ mod tui;
 mod upgrade;
 mod validate;
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
@@ -119,6 +122,12 @@ enum Commands {
         json: bool,
     },
 
+    /// Ingest and summarize external per-step judgments for on-policy distillation.
+    Judge {
+        #[command(subcommand)]
+        action: JudgeAction,
+    },
+
     /// List installed skills and their provenance.
     Skills {
         /// Emit machine-readable JSON instead of a table.
@@ -179,6 +188,12 @@ enum Commands {
     Outcome {
         #[command(subcommand)]
         action: OutcomeAction,
+    },
+
+    /// Pin and inspect regression base cases for edited skills.
+    Regress {
+        #[command(subcommand)]
+        action: RegressAction,
     },
 
     /// Open the terminal UI to browse recordings, inspect spans, and audit skills.
@@ -527,6 +542,70 @@ enum OutcomeAction {
     },
 }
 
+#[derive(Subcommand)]
+enum JudgeAction {
+    /// Import external per-step judgments from JSON on stdin or a file.
+    ///
+    /// Input can be one recording object, an array of recording objects, an envelope
+    /// with `recordings`, or (when a reference is passed) an array of judgments. Each
+    /// judgment uses either `seq` (0-based span index) or `step` (1-based display
+    /// index), plus verdict `ok` or `fork`, a rationale, and optional
+    /// `suggested_action`.
+    Import {
+        /// Optional recording to attach a bare judgment array/object to.
+        reference: Option<String>,
+        /// Read JSON from this file instead of stdin.
+        #[arg(long, value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// Evaluator source, e.g. human, llm_review, strong_judge. Requires a recording reference.
+        #[arg(long)]
+        evaluator: Option<String>,
+        /// Emit machine-readable JSON instead of a short report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Summarize measured fork points across attempts for one task.
+    Summary {
+        /// Recording reference whose task name should be summarized. Omit with
+        /// `--task` to summarize a task name explicitly.
+        reference: Option<String>,
+        /// Recording/task name to summarize across attempts.
+        #[arg(long)]
+        task: Option<String>,
+        /// Emit machine-readable JSON instead of a report.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum RegressAction {
+    /// Pin one recording as a regression base case for the current skill version.
+    Pin {
+        /// Skill name under the skills root.
+        #[arg(long)]
+        skill: String,
+        /// Recording that represents the base case.
+        #[arg(long = "rec")]
+        rec_id: String,
+        /// Human-readable base-case label.
+        #[arg(long = "case")]
+        case_label: String,
+        /// Optional operator note.
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Show pinned base cases and whether the skill changed since the latest pin.
+    Status {
+        /// Skill name under the skills root.
+        #[arg(long)]
+        skill: String,
+        /// Emit machine-readable JSON instead of a report.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 fn main() {
     let cli = Cli::parse();
     let Some(command) = cli.command else {
@@ -614,6 +693,7 @@ fn main() {
         Commands::Show { reference, json } => {
             exit_on_error(cmd_show(&resolve_or_exit(reference.as_deref()), json))
         }
+        Commands::Judge { action } => exit_on_error(cmd_judge(action)),
         Commands::Skills { json } => exit_on_error(cmd_skills(json)),
         Commands::Harnesses { json } => exit_on_error(cmd_harnesses(json)),
         Commands::Link { skill, all, json } => exit_on_error(cmd_link(skill.as_deref(), all, json)),
@@ -622,6 +702,7 @@ fn main() {
             exit_on_error(cmd_evaluations(skill.as_deref(), json))
         }
         Commands::Outcome { action } => exit_on_error(cmd_outcome(action)),
+        Commands::Regress { action } => exit_on_error(cmd_regress(action)),
         Commands::Tui => exit_on_error(tui::run()),
         Commands::Export {
             reference,
@@ -1005,6 +1086,128 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cmd_judge(action: JudgeAction) -> anyhow::Result<()> {
+    match action {
+        JudgeAction::Import {
+            reference,
+            file,
+            evaluator,
+            json,
+        } => {
+            let raw = read_stdin_or_file(file.as_deref())?;
+            let raw = prepare_judgment_import(&raw, reference.as_deref(), evaluator.as_deref())?;
+            let report = judge::import_json(&raw)?;
+            if json {
+                return print_json(&report);
+            }
+            println!(
+                "judgments imported: {} judgment(s) across {} recording(s)",
+                report.imported, report.recordings
+            );
+            if !report.tasks.is_empty() {
+                println!("  task_key(s): {}", report.tasks.join(", "));
+            }
+        }
+        JudgeAction::Summary {
+            reference,
+            task,
+            json,
+        } => {
+            let summary = judge::summarize(task.as_deref(), reference.as_deref())?;
+            if json {
+                return print_json(&summary);
+            }
+            print!("{}", judge::render_summary(&summary));
+        }
+    }
+    Ok(())
+}
+
+fn cmd_regress(action: RegressAction) -> anyhow::Result<()> {
+    match action {
+        RegressAction::Pin {
+            skill,
+            rec_id,
+            case_label,
+            notes,
+        } => {
+            let rec_id = record::resolve_ref(Some(&rec_id))?;
+            let event = regression::record_base_case(regression::BaseCaseInput {
+                skill_name: skill,
+                rec_id,
+                case_name: Some(case_label),
+                reference_version: None,
+                notes,
+            })?;
+            println!(
+                "base case pinned: {} {} rec_id={} hash={}",
+                event.event_id,
+                event.skill_name,
+                event.rec_id,
+                event.skill_hash.as_deref().unwrap_or("unknown")
+            );
+            println!(
+                "  galdr records the guardrail; rerun this case after skill edits and record outcomes."
+            );
+        }
+        RegressAction::Status { skill, json } => {
+            let status = regression::status(&skill);
+            if json {
+                return print_json(&status);
+            }
+            print!("{}", regression::render_status(&status));
+        }
+    }
+    Ok(())
+}
+
+fn read_stdin_or_file(file: Option<&Path>) -> anyhow::Result<String> {
+    use anyhow::Context as _;
+
+    if let Some(file) = file {
+        return std::fs::read_to_string(file)
+            .with_context(|| format!("could not read {}", file.display()));
+    }
+    let mut raw = String::new();
+    std::io::stdin().read_to_string(&mut raw)?;
+    Ok(raw)
+}
+
+fn prepare_judgment_import(
+    raw: &str,
+    reference: Option<&str>,
+    evaluator: Option<&str>,
+) -> anyhow::Result<String> {
+    let Some(reference) = reference else {
+        if evaluator.is_some() {
+            anyhow::bail!("--evaluator requires a recording reference");
+        }
+        return Ok(raw.to_string());
+    };
+    let rec_id = record::resolve_ref(Some(reference))?;
+    let value: serde_json::Value = serde_json::from_str(raw)?;
+    match value {
+        serde_json::Value::Array(judgments) => Ok(serde_json::json!({
+            "rec_id": rec_id,
+            "judge": evaluator,
+            "judgments": judgments,
+        })
+        .to_string()),
+        serde_json::Value::Object(mut map) if map.contains_key("judgments") => {
+            map.entry("rec_id".to_string())
+                .or_insert_with(|| serde_json::Value::String(rec_id));
+            if let Some(evaluator) = evaluator {
+                map.entry("judge".to_string())
+                    .or_insert_with(|| serde_json::Value::String(evaluator.to_string()));
+            }
+            Ok(serde_json::Value::Object(map).to_string())
+        }
+        _ => anyhow::bail!(
+            "with a recording reference, judgment input must be an array or an object with `judgments`"
+        ),
+    }
+}
+
 /// Warns (without failing) when an outcome is recorded for a skill that is not
 /// installed. The event is still written — a skill can be uninstalled after use —
 /// but a typo'd name would otherwise silently poison the supervised-data lane.
@@ -1024,6 +1227,7 @@ struct ValidationTarget {
     label: String,
     md: String,
     draft: bool,
+    skill_name: Option<String>,
 }
 
 fn cmd_validate(
@@ -1045,6 +1249,7 @@ fn cmd_validate(
             label: path.display().to_string(),
             md,
             draft: false,
+            skill_name: None,
         });
     } else {
         let skills = from_db(catalog::list_skills).unwrap_or_default();
@@ -1064,10 +1269,12 @@ fn cmd_validate(
                 s.status.as_str(),
                 catalog::STATUS_DRAFT | catalog::STATUS_PARAM_DRAFT
             );
+            let skill_name = s.skill_name.clone();
             targets.push(ValidationTarget {
                 label: s.skill_name,
                 md,
                 draft,
+                skill_name: Some(skill_name),
             });
         }
     }
@@ -1127,6 +1334,10 @@ fn validation_target_json(
             })
         })
         .collect();
+    let regression = target
+        .skill_name
+        .as_deref()
+        .and_then(|skill| regression::check_skill(skill).ok());
     serde_json::json!({
         "skill": target.label,
         "draft": target.draft,
@@ -1134,6 +1345,7 @@ fn validation_target_json(
         "errors": report.errors(),
         "warnings": report.warnings(),
         "findings": findings,
+        "regression": regression,
     })
 }
 
@@ -1153,6 +1365,21 @@ fn print_validation_report(
     let strict_note = if strict { " [strict]" } else { "" };
     println!("{} — {verdict}{strict_note}", target.label);
     print!("{report}");
+    if let Some(skill_name) = target.skill_name.as_deref()
+        && let Ok(status) = regression::check_skill(skill_name)
+        && !status.base_cases.is_empty()
+    {
+        println!(
+            "regression: {} base case(s) pinned{}",
+            status.base_cases.len(),
+            if status.changed_unverified > 0 {
+                "; skill changed since at least one pin"
+            } else {
+                ""
+            }
+        );
+        println!("  galdr records the guardrail only; rerun base cases after edits.");
+    }
 }
 
 fn severity_str(severity: validate::Severity) -> &'static str {
@@ -1184,8 +1411,14 @@ fn cmd_reindex() -> anyhow::Result<()> {
         catalog::reindex(&mut conn)?
     };
     println!(
-        "catalog rebuilt: {} recordings, {} steps, {} skills, {} usages, {} outcomes",
-        stats.recordings, stats.steps, stats.skills, stats.usages, stats.outcomes
+        "catalog rebuilt: {} recordings, {} steps, {} judgments, {} skills, {} usages, {} outcomes, {} regression cases",
+        stats.recordings,
+        stats.steps,
+        stats.judgments,
+        stats.skills,
+        stats.usages,
+        stats.outcomes,
+        stats.regression_cases
     );
     Ok(())
 }
@@ -1246,6 +1479,22 @@ fn print_recording_detail(detail: &catalog::RecordingDetail) {
             step.tool_name,
             step.summary
         );
+        for judgment in &step.judgments {
+            let action = judgment
+                .suggested_action
+                .as_ref()
+                .map(|value| format!("; do instead: {value}"))
+                .unwrap_or_default();
+            let judge = judgment
+                .judge
+                .as_ref()
+                .map(|value| format!(" ({value})"))
+                .unwrap_or_default();
+            println!(
+                "         judgment {}: {}{}{}",
+                judgment.verdict, judgment.rationale, action, judge
+            );
+        }
     }
 }
 

@@ -23,8 +23,10 @@ use anyhow::{Context, Result};
 use rusqlite::{Connection, MAIN_DB, OpenFlags, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::judge::StepJudgmentEvent;
 use crate::outcome::{SkillOutcomeEvent, SkillUsageEvent};
 use crate::record::Recording;
+use crate::regression::RegressionBaseCaseEvent;
 use crate::span::Event;
 
 pub const STATUS_DRAFT: &str = "draft";
@@ -54,6 +56,8 @@ pub struct StepRow {
     pub event_kind: String,
     pub ts: String,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub judgments: Vec<StepJudgmentRow>,
 }
 
 /// A recording together with its steps.
@@ -61,6 +65,20 @@ pub struct StepRow {
 pub struct RecordingDetail {
     pub recording: RecordingRow,
     pub steps: Vec<StepRow>,
+}
+
+/// One external judgment attached to a recorded step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StepJudgmentRow {
+    pub event_id: String,
+    pub rec_id: String,
+    pub seq: i64,
+    pub verdict: String,
+    pub rationale: String,
+    pub suggested_action: Option<String>,
+    pub judge: Option<String>,
+    pub task_key: String,
+    pub created_at: String,
 }
 
 /// One installed skill and its provenance.
@@ -158,14 +176,29 @@ pub struct SkillOutcomeRow {
     pub created_at: String,
 }
 
+/// One skill regression base case pinned to a skill version.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegressionBaseCaseRow {
+    pub event_id: String,
+    pub skill_name: String,
+    pub skill_hash: Option<String>,
+    pub rec_id: String,
+    pub case_name: String,
+    pub reference_version: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
 /// What a reindex rebuilt.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReindexStats {
     pub recordings: usize,
     pub steps: usize,
+    pub judgments: usize,
     pub skills: usize,
     pub usages: usize,
     pub outcomes: usize,
+    pub regression_cases: usize,
 }
 
 const SCHEMA: &str = "
@@ -253,6 +286,41 @@ CREATE INDEX IF NOT EXISTS idx_skill_outcomes_rec
     ON skill_outcomes(rec_id);
 ";
 
+const STEP_JUDGMENT_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS step_judgments (
+    event_id         TEXT PRIMARY KEY,
+    rec_id           TEXT NOT NULL,
+    seq              INTEGER NOT NULL,
+    verdict          TEXT NOT NULL,
+    rationale        TEXT NOT NULL,
+    suggested_action TEXT,
+    judge            TEXT,
+    task_key         TEXT NOT NULL,
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_step_judgments_rec_seq
+    ON step_judgments(rec_id, seq, created_at);
+CREATE INDEX IF NOT EXISTS idx_step_judgments_task
+    ON step_judgments(task_key, seq);
+";
+
+const REGRESSION_BASE_CASE_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS regression_base_cases (
+    event_id          TEXT PRIMARY KEY,
+    skill_name        TEXT NOT NULL,
+    skill_hash        TEXT,
+    rec_id            TEXT NOT NULL,
+    case_name         TEXT NOT NULL,
+    reference_version TEXT,
+    notes             TEXT,
+    created_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regression_base_cases_skill
+    ON regression_base_cases(skill_name, created_at);
+CREATE INDEX IF NOT EXISTS idx_regression_base_cases_rec
+    ON regression_base_cases(rec_id);
+";
+
 fn apply_pragmas(conn: &Connection, wal: bool) -> Result<()> {
     if wal {
         // execute_batch tolerates the result row PRAGMA journal_mode returns.
@@ -307,6 +375,14 @@ fn migrate_schema(conn: &Connection) -> Result<()> {
             "TEXT NOT NULL DEFAULT 'tool_call'",
         )?;
         conn.pragma_update(None, "user_version", 5_i64)?;
+    }
+    if version < 6 {
+        conn.execute_batch(STEP_JUDGMENT_SCHEMA)?;
+        conn.pragma_update(None, "user_version", 6_i64)?;
+    }
+    if version < 7 {
+        conn.execute_batch(REGRESSION_BASE_CASE_SCHEMA)?;
+        conn.pragma_update(None, "user_version", 7_i64)?;
     }
     Ok(())
 }
@@ -633,6 +709,50 @@ pub fn index_skill_outcome(conn: &Connection, event: &SkillOutcomeEvent) -> Resu
     Ok(())
 }
 
+/// Indexes one durable external per-step judgment.
+pub fn index_step_judgment(conn: &Connection, event: &StepJudgmentEvent) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO step_judgments(
+            event_id, rec_id, seq, verdict, rationale, suggested_action, judge, task_key, created_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        params![
+            event.event_id,
+            event.rec_id,
+            event.seq as i64,
+            event.verdict.as_str(),
+            event.rationale,
+            event.suggested_action,
+            event.judge,
+            event.task_key,
+            event.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Indexes one durable skill regression base case.
+pub fn index_regression_base_case(
+    conn: &Connection,
+    event: &RegressionBaseCaseEvent,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO regression_base_cases(
+            event_id, skill_name, skill_hash, rec_id, case_name, reference_version, notes, created_at
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![
+            event.event_id,
+            event.skill_name,
+            event.skill_hash,
+            event.rec_id,
+            event.case_name,
+            event.reference_version,
+            event.notes,
+            event.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Keeps the live catalog current for an appended usage event.
 pub fn sync_skill_usage(event: &SkillUsageEvent) -> Result<()> {
     let conn = open()?;
@@ -643,6 +763,23 @@ pub fn sync_skill_usage(event: &SkillUsageEvent) -> Result<()> {
 pub fn sync_skill_outcome(event: &SkillOutcomeEvent) -> Result<()> {
     let conn = open()?;
     index_skill_outcome(&conn, event)
+}
+
+/// Keeps the live catalog current for appended per-step judgments.
+pub fn sync_step_judgments(events: &[StepJudgmentEvent]) -> Result<()> {
+    let conn = open()?;
+    let tx = conn.unchecked_transaction()?;
+    for event in events {
+        index_step_judgment(&tx, event)?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Keeps the live catalog current for an appended regression base case.
+pub fn sync_regression_base_case(event: &RegressionBaseCaseEvent) -> Result<()> {
+    let conn = open()?;
+    index_regression_base_case(&conn, event)
 }
 
 const RECORDING_SELECT: &str = "
@@ -683,7 +820,7 @@ pub fn show_recording(conn: &Connection, id: &str) -> Result<Option<RecordingDet
         "SELECT seq, tool_name, COALESCE(event_kind,'tool_call'), COALESCE(ts,''), COALESCE(summary,'')
          FROM steps WHERE rec_id = ?1 ORDER BY seq",
     )?;
-    let steps = stmt
+    let mut steps = stmt
         .query_map(params![id], |r| {
             Ok(StepRow {
                 seq: r.get(0)?,
@@ -691,10 +828,44 @@ pub fn show_recording(conn: &Connection, id: &str) -> Result<Option<RecordingDet
                 event_kind: r.get(2)?,
                 ts: r.get(3)?,
                 summary: r.get(4)?,
+                judgments: Vec::new(),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    attach_step_judgments(conn, id, &mut steps)?;
     Ok(Some(RecordingDetail { recording, steps }))
+}
+
+fn attach_step_judgments(conn: &Connection, rec_id: &str, steps: &mut [StepRow]) -> Result<()> {
+    let mut by_seq = std::collections::BTreeMap::<i64, Vec<StepJudgmentRow>>::new();
+    let mut stmt = conn.prepare(
+        "SELECT seq, event_id, rec_id, verdict, rationale, suggested_action, judge, task_key, created_at
+         FROM step_judgments WHERE rec_id = ?1 ORDER BY seq, created_at, event_id",
+    )?;
+    let rows = stmt.query_map(params![rec_id], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            StepJudgmentRow {
+                event_id: r.get(1)?,
+                rec_id: r.get(2)?,
+                seq: r.get(0)?,
+                verdict: r.get(3)?,
+                rationale: r.get(4)?,
+                suggested_action: r.get(5)?,
+                judge: r.get(6)?,
+                task_key: r.get(7)?,
+                created_at: r.get(8)?,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (seq, judgment) = row?;
+        by_seq.entry(seq).or_default().push(judgment);
+    }
+    for step in steps {
+        step.judgments = by_seq.remove(&step.seq).unwrap_or_default();
+    }
+    Ok(())
 }
 
 /// Lists installed skills with provenance, flagging orphans.
@@ -855,6 +1026,83 @@ pub fn list_skill_outcomes(
     }
 }
 
+/// Lists external per-step judgments, newest first.
+pub fn list_step_judgments(
+    conn: &Connection,
+    rec_id: Option<&str>,
+) -> Result<Vec<StepJudgmentRow>> {
+    let map = |r: &rusqlite::Row<'_>| {
+        Ok(StepJudgmentRow {
+            event_id: r.get(0)?,
+            rec_id: r.get(1)?,
+            seq: r.get(2)?,
+            verdict: r.get(3)?,
+            rationale: r.get(4)?,
+            suggested_action: r.get(5)?,
+            judge: r.get(6)?,
+            task_key: r.get(7)?,
+            created_at: r.get(8)?,
+        })
+    };
+
+    if let Some(rec_id) = rec_id {
+        let mut stmt = conn.prepare(
+            "SELECT event_id, rec_id, seq, verdict, rationale, suggested_action, judge, task_key, created_at
+             FROM step_judgments
+             WHERE rec_id = ?1
+             ORDER BY created_at DESC, event_id DESC",
+        )?;
+        let rows = stmt.query_map(params![rec_id], map)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT event_id, rec_id, seq, verdict, rationale, suggested_action, judge, task_key, created_at
+             FROM step_judgments
+             ORDER BY created_at DESC, event_id DESC",
+        )?;
+        let rows = stmt.query_map([], map)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
+/// Lists skill regression base cases, newest first.
+pub fn list_regression_base_cases(
+    conn: &Connection,
+    skill_name: Option<&str>,
+) -> Result<Vec<RegressionBaseCaseRow>> {
+    let map = |r: &rusqlite::Row<'_>| {
+        Ok(RegressionBaseCaseRow {
+            event_id: r.get(0)?,
+            skill_name: r.get(1)?,
+            skill_hash: r.get(2)?,
+            rec_id: r.get(3)?,
+            case_name: r.get(4)?,
+            reference_version: r.get(5)?,
+            notes: r.get(6)?,
+            created_at: r.get(7)?,
+        })
+    };
+
+    if let Some(skill_name) = skill_name {
+        let mut stmt = conn.prepare(
+            "SELECT event_id, skill_name, skill_hash, rec_id, case_name, reference_version, notes, created_at
+             FROM regression_base_cases
+             WHERE skill_name = ?1
+             ORDER BY created_at DESC, event_id DESC",
+        )?;
+        let rows = stmt.query_map(params![skill_name], map)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    } else {
+        let mut stmt = conn.prepare(
+            "SELECT event_id, skill_name, skill_hash, rec_id, case_name, reference_version, notes, created_at
+             FROM regression_base_cases
+             ORDER BY created_at DESC, event_id DESC",
+        )?;
+        let rows = stmt.query_map([], map)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+}
+
 /// Best-effort reconciliation run by the daemon's poll-watcher: pull in any events
 /// that a dropped notification left unindexed. Idempotent and bounded — it only
 /// touches the active recording's tail and closed recordings not yet present.
@@ -913,8 +1161,10 @@ pub fn reindex_into(conn: &Connection) -> Result<ReindexStats> {
         conn,
         &crate::paths::spans_dir()?,
         &crate::paths::recordings_dir()?,
+        &crate::paths::judgments_dir()?,
         &crate::paths::skills_root()?,
         &crate::paths::outcomes_dir()?,
+        &crate::paths::regression_dir()?,
     )
 }
 
@@ -922,8 +1172,10 @@ fn reindex_into_dirs(
     conn: &Connection,
     spans_dir: &Path,
     recordings_dir: &Path,
+    judgments_dir: &Path,
     skills_root: &Path,
     outcomes_dir: &Path,
+    regression_dir: &Path,
 ) -> Result<ReindexStats> {
     let tx = conn.unchecked_transaction()?;
     let mut stats = ReindexStats::default();
@@ -963,7 +1215,21 @@ fn reindex_into_dirs(
         }
     }
 
-    // 3) Skills provenance.
+    // 3) External per-step judgments.
+    if let Ok(entries) = std::fs::read_dir(judgments_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            for event in crate::judge::read_jsonl::<StepJudgmentEvent>(&path)? {
+                index_step_judgment(&tx, &event)?;
+                stats.judgments += 1;
+            }
+        }
+    }
+
+    // 4) Skills provenance.
     for skill in scan_skills_raw(skills_root) {
         upsert_skill(
             &tx,
@@ -976,6 +1242,7 @@ fn reindex_into_dirs(
         stats.skills += 1;
     }
 
+    // 5) Skill replay outcomes.
     let usage_log = outcomes_dir.join("skill_usage.jsonl");
     for event in crate::outcome::read_usage_log(&usage_log)? {
         index_skill_usage(&tx, &event)?;
@@ -986,6 +1253,12 @@ fn reindex_into_dirs(
     for event in crate::outcome::read_outcome_log(&outcome_log)? {
         index_skill_outcome(&tx, &event)?;
         stats.outcomes += 1;
+    }
+
+    let regression_log = regression_dir.join("base_cases.jsonl");
+    for event in crate::regression::read_base_cases_log(&regression_log)? {
+        index_regression_base_case(&tx, &event)?;
+        stats.regression_cases += 1;
     }
 
     tx.commit()?;
@@ -1323,7 +1596,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -1440,7 +1713,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 7);
     }
 
     #[test]
@@ -1557,12 +1830,16 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let spans = root.path().join("spans");
         let recordings = root.path().join("recordings");
+        let judgments = root.path().join("judgments");
         let skills = root.path().join("skills");
         let outcomes = root.path().join("outcomes");
+        let regression = root.path().join("regression");
         std::fs::create_dir_all(&spans).unwrap();
         std::fs::create_dir_all(&recordings).unwrap();
+        std::fs::create_dir_all(&judgments).unwrap();
         std::fs::create_dir_all(skills.join("galdr-demo")).unwrap();
         std::fs::create_dir_all(&outcomes).unwrap();
+        std::fs::create_dir_all(&regression).unwrap();
 
         crate::span::append_event(&spans.join("01AAA.jsonl"), &event(0, "Bash")).unwrap();
         crate::span::append_event(&spans.join("01AAA.jsonl"), &event(1, "Write")).unwrap();
@@ -1576,11 +1853,37 @@ mod tests {
             "---\nname: galdr-demo\n---\n\n## Provenance\n\n- rec_id: `01AAA`\n",
         )
         .unwrap();
+        let judgment = StepJudgmentEvent {
+            event_id: "01JUDGE".into(),
+            rec_id: "01AAA".into(),
+            seq: 1,
+            verdict: crate::judge::StepVerdict::Fork,
+            rationale: "executor wrote before reading the existing file".into(),
+            suggested_action: Some("read the file first".into()),
+            judge: Some("external".into()),
+            task_key: "demo".into(),
+            created_at: "2026-06-19T00:02:00Z".into(),
+        };
+        std::fs::write(
+            judgments.join("01AAA.jsonl"),
+            format!("{}\n", serde_json::to_string(&judgment).unwrap()),
+        )
+        .unwrap();
 
         let conn = mem();
-        let stats = reindex_into_dirs(&conn, &spans, &recordings, &skills, &outcomes).unwrap();
+        let stats = reindex_into_dirs(
+            &conn,
+            &spans,
+            &recordings,
+            &judgments,
+            &skills,
+            &outcomes,
+            &regression,
+        )
+        .unwrap();
         assert_eq!(stats.recordings, 1);
         assert_eq!(stats.steps, 2);
+        assert_eq!(stats.judgments, 1);
         assert_eq!(stats.skills, 1);
 
         let rows = list_recordings(&conn).unwrap();
@@ -1592,5 +1895,8 @@ mod tests {
         let skills = list_skills(&conn).unwrap();
         assert_eq!(skills[0].rec_id.as_deref(), Some("01AAA"));
         assert!(!skills[0].orphan);
+        let detail = show_recording(&conn, "01AAA").unwrap().unwrap();
+        assert_eq!(detail.steps[1].judgments.len(), 1);
+        assert_eq!(detail.steps[1].judgments[0].verdict, "fork");
     }
 }
