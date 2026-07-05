@@ -174,7 +174,7 @@ fn normalize_label(value: &str, fallback: &str) -> String {
     }
 }
 
-fn skill_hash(skill_name: &str) -> Result<String> {
+pub fn skill_hash(skill_name: &str) -> Result<String> {
     let path = paths::skill_dir(skill_name)?.join("SKILL.md");
     let bytes =
         std::fs::read(&path).with_context(|| format!("could not read {}", path.display()))?;

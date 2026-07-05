@@ -780,6 +780,8 @@ fn render_complete_skill(
     }
     let _ = writeln!(out);
 
+    render_known_forking_points(&mut out, recording, &steps, home);
+
     // Verification.
     let _ = writeln!(out, "## Verification");
     let _ = writeln!(out);
@@ -807,6 +809,50 @@ fn render_complete_skill(
     let _ = writeln!(out);
 
     out
+}
+
+fn render_known_forking_points(
+    out: &mut String,
+    recording: &record::Recording,
+    steps: &[Event],
+    home: Option<&str>,
+) {
+    let fork_points = crate::judge::summaries_for_distill(recording, steps);
+    if fork_points.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "## Known Forking Points");
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "These are measured external judgments from on-policy attempts, not inferred guesses:"
+    );
+    for point in fork_points.iter().take(8) {
+        let example = point.examples.first();
+        let rationale = example
+            .map(|example| safe_judgment_text(&example.rationale, home))
+            .unwrap_or_else(|| "executor forked at this step".to_string());
+        let action = example
+            .and_then(|example| example.suggested_action.as_deref())
+            .map(|action| safe_judgment_text(action, home));
+        let _ = write!(
+            out,
+            "- Step {}: {}/{} judged attempt(s) forked. {}",
+            point.step, point.forks, point.judged, rationale
+        );
+        if let Some(action) = action {
+            let _ = write!(out, " Do this instead: {action}");
+        }
+        let _ = writeln!(out);
+    }
+    let _ = writeln!(out);
+}
+
+fn safe_judgment_text(text: &str, home: Option<&str>) -> String {
+    one_line(
+        &crate::validate::generalize_session_text(&crate::export::redact_text(text), home),
+        240,
+    )
 }
 
 /// Drops recording scaffolding from the steps, sharing the noise rubric with the

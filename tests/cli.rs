@@ -1296,6 +1296,103 @@ fn human_events_reindex_show_distill_and_export() {
 }
 
 #[test]
+fn judge_import_show_summary_distill_and_reindex() {
+    let sb = Sandbox::new();
+    let first = sb.record(
+        "on policy task",
+        &[
+            BASH_STATUS,
+            r#"{"tool_name":"Write","tool_input":{"file_path":"/repo/out.txt"},"tool_response":{}}"#,
+        ],
+    );
+    let second = sb.record(
+        "on policy task",
+        &[
+            BASH_STATUS,
+            r#"{"tool_name":"Write","tool_input":{"file_path":"/repo/other.txt"},"tool_response":{}}"#,
+        ],
+    );
+    let input = sb.home().join("judgments.json");
+    std::fs::write(
+        &input,
+        serde_json::json!({
+            "task_key": "on-policy-demo",
+            "judge": "external-strong-judge",
+            "recordings": [
+                {
+                    "rec_id": first,
+                    "judgments": [
+                        {
+                            "step": 2,
+                            "verdict": "fork",
+                            "rationale": "executor wrote the file before checking the expected output",
+                            "suggested_action": "inspect the expected output before writing"
+                        }
+                    ]
+                },
+                {
+                    "rec_id": second,
+                    "judgments": [
+                        {
+                            "step": 2,
+                            "verdict": "ok",
+                            "rationale": "executor checked the target before writing"
+                        }
+                    ]
+                }
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let imported = sb
+        .cmd()
+        .args(["judge", "import", "--file"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(imported.status.success(), "{}", stderr(&imported));
+    assert!(stdout(&imported).contains("judgments imported"));
+
+    let shown = stdout(&sb.run(&["show", &first]));
+    assert!(shown.contains("judgment fork"), "{shown}");
+    assert!(
+        shown.contains("inspect the expected output before writing"),
+        "{shown}"
+    );
+
+    let shown_json = sb.run(&["show", &first, "--json"]);
+    assert!(shown_json.status.success(), "{}", stderr(&shown_json));
+    let detail: serde_json::Value = serde_json::from_str(&stdout(&shown_json)).unwrap();
+    assert_eq!(
+        detail["steps"][1]["judgments"][0]["verdict"],
+        serde_json::json!("fork")
+    );
+
+    let summary = stdout(&sb.run(&["judge", "summary", "--task", "on-policy-demo"]));
+    assert!(
+        summary.contains("step 2")
+            && (summary.contains("1/2 forked") || summary.contains("1/2 fork(s)")),
+        "{summary}"
+    );
+
+    assert!(sb.run(&["reindex"]).status.success());
+    let after_reindex = stdout(&sb.run(&["show", &first]));
+    assert!(after_reindex.contains("judgment fork"), "{after_reindex}");
+
+    let distill = sb.run(&["distill", &first, "--fast"]);
+    assert!(distill.status.success(), "{}", stderr(&distill));
+    let skill = sb.skill_md("galdr-on-policy-task");
+    assert!(skill.contains("## Known Forking Points"), "{skill}");
+    assert!(skill.contains("measured external judgments"), "{skill}");
+    assert!(
+        skill.contains("Do this instead: inspect the expected output before writing"),
+        "{skill}"
+    );
+}
+
+#[test]
 fn observe_synthetic_records_a_human_trace() {
     let sb = Sandbox::new();
     let observed = sb.run(&[
@@ -2057,6 +2154,61 @@ fn outcome_usage_and_labels_survive_reindex() {
     assert!(listing.contains("success"));
     assert!(listing.contains("accepted"));
     assert!(listing.contains("interventions  2"));
+}
+
+#[test]
+fn regression_base_cases_pin_skill_hash_and_surface_in_validate() {
+    let sb = Sandbox::new();
+    let id = sb.record("regress", &[BASH_STATUS]);
+    assert!(sb.run(&["distill", &id, "--fast"]).status.success());
+
+    let pinned = sb.run(&[
+        "regress",
+        "pin",
+        "--skill",
+        "galdr-regress",
+        "--rec",
+        &id,
+        "--case",
+        "happy path",
+    ]);
+    assert!(pinned.status.success(), "{}", stderr(&pinned));
+    assert!(stdout(&pinned).contains("base case pinned"));
+
+    let status = stdout(&sb.run(&["regress", "status", "--skill", "galdr-regress"]));
+    assert!(
+        status.contains("regression guard") || status.contains("Regression base cases"),
+        "{status}"
+    );
+    assert!(status.contains("happy path"), "{status}");
+    assert!(
+        status.contains("does not execute natural-language replays")
+            || status.contains("does not execute natural-language skills")
+            || status.contains("pins the base cases"),
+        "{status}"
+    );
+
+    let validate = sb.run(&["validate", "galdr-regress", "--json"]);
+    assert!(validate.status.success(), "{}", stderr(&validate));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout(&validate)).unwrap();
+    assert_eq!(
+        parsed[0]["regression"]["base_cases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let skill_path = sb.home().join(".agents/skills/galdr-regress/SKILL.md");
+    let mut skill = std::fs::read_to_string(&skill_path).unwrap();
+    skill.push_str("\n<!-- operator edit -->\n");
+    std::fs::write(&skill_path, skill).unwrap();
+
+    let changed = stdout(&sb.run(&["regress", "status", "--skill", "galdr-regress"]));
+    assert!(
+        changed.contains("changed_unverified") || changed.contains("1 changed/unverified"),
+        "{changed}"
+    );
 }
 
 #[test]

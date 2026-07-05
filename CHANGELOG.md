@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [Unreleased]
+
+### Features
+
+* Add on-policy per-step judgment ingestion with `galdr judge import`, `galdr judge summary`,
+  `show`/TUI visibility, `reindex` persistence, and measured fork-point sections in
+  distilled skills.
+* Add `galdr regress pin/status` as a local regression base-case ledger for edited skills.
+  It pins the current skill hash and reports when base cases need real replay/review; it
+  does not pretend to execute natural-language skills.
+
 ## [0.17.0](https://github.com/Arakiss/galdr/compare/v0.16.1...v0.17.0) (2026-07-02)
 
 

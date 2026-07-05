@@ -18,6 +18,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{RecordingDetail, RecordingRow, ReindexStats, SkillRow};
+use crate::judge::StepJudgmentEvent;
 use crate::record::Recording;
 use crate::span::Event;
 
@@ -47,6 +48,8 @@ pub enum Request {
         #[serde(default = "default_skill_status")]
         status: String,
     },
+    /// External per-step judgments were appended for one or more recordings.
+    StepJudgmentsImported { judgments: Vec<StepJudgmentEvent> },
     /// List closed recordings.
     ListRecordings,
     /// Show one recording with its steps.

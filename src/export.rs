@@ -59,6 +59,15 @@ pub fn export_recording(id: &str, out: &Path, include_raw: bool, redact: bool) -
         .collect();
     write_json(&out.join("outcomes.json"), &outcomes, redact)?;
 
+    let judgments = catalog::list_step_judgments(&conn, Some(id))?;
+    write_json(&out.join("judgments.json"), &judgments, redact)?;
+
+    let regression_cases: Vec<_> = catalog::list_regression_base_cases(&conn, None)?
+        .into_iter()
+        .filter(|case| case.rec_id == id)
+        .collect();
+    write_json(&out.join("regression.json"), &regression_cases, redact)?;
+
     if include_raw || redact {
         if include_raw && !redact {
             eprintln!("warning: exporting raw tool payloads; treat the output as sensitive");

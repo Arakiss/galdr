@@ -143,6 +143,16 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
   after you later USE a distilled skill, record how it went (`--rec` defaults to the most
   recent recording). This is the training signal that tells galdr which skills are worth
   keeping; record it honestly.
+- `galdr judge import [reference] [--file <file>] [--evaluator <name>] [--json]` —
+  ingest external per-step judgments for closed recordings. A bare JSON array attaches
+  to `reference`; a batch envelope can carry multiple recordings and a shared
+  `task_key`. galdr stores the signal, but never calls a judge model itself.
+- `galdr judge summary [reference | --task <task_key>] [--json]` — summarize measured
+  fork points across honest attempts of the same task.
+- `galdr regress pin --skill <name> --rec <reference> --case <label>` —
+  pin a base-case recording to the current skill hash before editing the skill.
+- `galdr regress status --skill <name> [--json]` — show pinned base cases and whether
+  the skill file changed since each pin. It is a ledger guard, not automatic replay.
 - `galdr suggest [--min-count <n>] [--top <n>] [--json]` — skill opportunities: repeated
   tasks (same step shape across recordings) not yet distilled, deduped against installed
   skills and ranked by repeatability. Turns "worth a skill?" into a queryable signal.
@@ -212,6 +222,8 @@ mod tests {
             "galdr distill",
             "galdr link",
             "galdr outcome usage",
+            "galdr judge import",
+            "galdr regress pin",
             "galdr doctor",
         ] {
             assert!(md.contains(cmd), "skill should document `{cmd}`");

@@ -267,6 +267,12 @@ fn handle_request(db: &Db, req: Request) -> Response {
             )
             .map(|()| Response::Ack)
         }),
+        Request::StepJudgmentsImported { judgments } => with_db(db, |c| {
+            for judgment in &judgments {
+                catalog::index_step_judgment(c, judgment)?;
+            }
+            Ok(Response::Ack)
+        }),
         Request::ListRecordings => with_db(db, |c| {
             catalog::list_recordings(c).map(|recordings| Response::Recordings { recordings })
         }),

@@ -90,6 +90,11 @@ prefix. Run `galdr` with no arguments for a one-screen overview of where you are
   terminal, the same way tools like `skhd` and `yabai` are granted.
 - **`galdr suggest`** — finds repeated tasks (the same shape across recordings) worth a skill.
 - **`galdr bench`** — how reliably your skills replay, aggregated from the outcomes you record.
+- **`galdr judge`** — ingests external per-step judgments (`ok` / `fork`) for closed
+  recordings, summarizes measured fork points across attempts, and feeds those failure
+  modes into distillation.
+- **`galdr regress`** — pins regression base cases to a skill version hash, so an edited
+  skill can be checked against the base cases that need real replay/review.
 - **`galdr tui`** — a terminal UI: an Overview dashboard, then tabs for recordings, skills,
   and harnesses; read a `SKILL.md` or a recording's (noise-filtered) steps at a glance.
 - **`galdr skills` / `galdr doctor`** — a small readiness-scored skill catalog, and a health
@@ -143,7 +148,8 @@ and content-free keystrokes behind Input Monitoring + Accessibility — optional
 **vision-assisted authoring** (keep screenshots ephemerally so the authoring pass writes
 semantic GUI steps), a safe, redacted export path, **concurrent per-session recordings** for
 multi-agent setups, full skill lifecycle (**`galdr rm`**), and a CLI that maintains itself
-(**`galdr upgrade`**, launchd-managed daemon).
+(**`galdr upgrade`**, launchd-managed daemon), **on-policy judgment ingestion** for measured
+fork points, and a **regression base-case ledger** for skill edits.
 
 Next: a live end-to-end recording verified in each harness, optional per-step screenshots for
 the macOS lane, and a multi-agent broker over the same model.
