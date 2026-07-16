@@ -47,9 +47,21 @@ pub fn run() -> Result<()> {
         _ => warn("daemon is not running; CLI fallbacks will be used"),
     }
 
+    let stale_after_hours = config::Config::load_capture().stale_after_hours;
     let actives = record::read_active_all();
-    match actives.as_slice() {
-        [] => ok("no active recording"),
+    let (stale, fresh): (Vec<_>, Vec<_>) = actives
+        .iter()
+        .partition(|a| record::is_stale(a, stale_after_hours));
+    for a in &stale {
+        let hours = record::inactive_hours(a).unwrap_or_default();
+        warn(format!(
+            "stale recording \"{}\" — inactive for {hours}h and no longer capturing; close it: galdr rec stop {}",
+            a.name, a.name
+        ));
+    }
+    match fresh.as_slice() {
+        [] if stale.is_empty() => ok("no active recording"),
+        [] => {}
         [active] => ok(format!(
             "active recording: {} ({})",
             active.name, active.rec_id

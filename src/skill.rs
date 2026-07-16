@@ -126,7 +126,10 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 
 ## Commands (the CLI is AI-first: add `--json` to any read command for structured output)
 
-- `galdr rec status` — is a recording active, and how many steps so far.
+- `galdr rec status` — is a recording active, and how many steps so far. A recording
+  whose session went silent (24h by default) is flagged `STALE` with the exact stop
+  command; stale recordings no longer capture new sessions, and the next `rec start`
+  auto-closes them.
 - `galdr rec start <slug>` / `galdr rec stop` — open and close a recording.
 - `galdr list [--json]` — closed recordings.
 - `galdr show [reference] [--json]` — a recording's steps (the most recent if omitted).
@@ -189,6 +192,10 @@ Do not use for one-off throwaway work, or for secret-heavy sessions unless asked
 ## Rules and robustness
 
 - One recording at a time. Always `galdr rec status` before `rec start`.
+- A `STALE` recording in `rec status` is a forgotten stop, not a live capture: it no
+  longer records new sessions and does not block you. Close it (`galdr rec stop
+  <name>`) or let your `rec start` reap it automatically. The threshold is
+  `capture.stale_after_hours` in `~/.galdr/config.json` (default 24; `0` disables).
 - Stop the recording before your final summary, so the report's own tool calls are not recorded.
 - The sensor never breaks your session: if galdr fails internally it exits cleanly and records nothing.
 - Everything is local. The raw recording lives only under `~/.galdr`; nothing leaves the machine.

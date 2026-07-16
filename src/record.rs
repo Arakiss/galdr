@@ -41,6 +41,10 @@ pub struct Recording {
     pub steps: usize,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Why the recording closed, when it was not a plain `rec stop` (e.g. reaped as
+    /// stale). Absent for ordinary stops.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_reason: Option<String>,
 }
 
 /// Current timestamp in RFC3339 (UTC).
@@ -48,6 +52,31 @@ pub fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_default()
+}
+
+/// Hours since this recording last saw activity: the span file's mtime when readable
+/// (`rec start` creates the span and every append touches it), else the recording's
+/// `started_at`. `None` when neither signal is available.
+pub fn inactive_hours(active: &ActiveRec) -> Option<i64> {
+    let span_mtime = paths::span_file(&active.rec_id)
+        .ok()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .and_then(|m| m.modified().ok())
+        .map(OffsetDateTime::from);
+    let last = span_mtime.or_else(|| OffsetDateTime::parse(&active.started_at, &Rfc3339).ok())?;
+    Some((OffsetDateTime::now_utc() - last).whole_hours())
+}
+
+/// Whether an active recording has gone stale: no activity for at least
+/// `stale_after_hours`. A forgotten `rec stop` used to leave a recording active
+/// forever — swallowing session-less events and scaring every future session away
+/// from recording. `0` disables staleness, and unknown activity is never stale:
+/// a live recording must not be reaped on a guess.
+pub fn is_stale(active: &ActiveRec, stale_after_hours: u64) -> bool {
+    if stale_after_hours == 0 {
+        return false;
+    }
+    inactive_hours(active).is_some_and(|hours| hours >= stale_after_hours as i64)
 }
 
 /// Folds a legacy single `~/.galdr/active` flag into the `active.d/` scheme, once.
@@ -134,6 +163,22 @@ pub fn start(name: Option<String>) -> Result<()> {
     paths::ensure_dirs()?;
     migrate_legacy_active();
 
+    // A forgotten `rec stop` must not haunt the machine: close anything stale before
+    // opening a new recording, so a zombie neither swallows session-less events nor
+    // scares agents (which read `rec status` before recording) away forever.
+    let stale_after_hours = crate::config::Config::load_capture().stale_after_hours;
+    for active in read_active_all() {
+        if is_stale(&active, stale_after_hours) {
+            let hours = inactive_hours(&active).unwrap_or_default();
+            let _ = stop_one(
+                &active,
+                Some(format!(
+                    "stale: inactive for {hours}h, auto-closed by rec start"
+                )),
+            );
+        }
+    }
+
     let rec_id = Ulid::new().to_string();
     let name = name.unwrap_or_else(|| "rec".to_string());
     let origin_cwd = std::env::current_dir()
@@ -188,12 +233,13 @@ pub fn stop(reference: Option<&str>) -> Result<()> {
             bail!("multiple recordings active — specify which: {list}");
         }
     };
-    stop_one(&target)
+    stop_one(&target, None)
 }
 
 /// Closes one active recording: persist the span, write its metadata, drop its flag,
-/// and best-effort index it.
-fn stop_one(active: &ActiveRec) -> Result<()> {
+/// and best-effort index it. `closed_reason` marks a non-manual close (e.g. a stale
+/// reap) both in the printed line and in the recording's metadata.
+fn stop_one(active: &ActiveRec, closed_reason: Option<String>) -> Result<()> {
     let span_path = paths::span_file(&active.rec_id)?;
     // Durably persist the span before we declare the recording closed. Best-effort:
     // a sync failure must not block stopping (the events are already in the file).
@@ -209,6 +255,7 @@ fn stop_one(active: &ActiveRec) -> Result<()> {
         ended_at: now_rfc3339(),
         steps,
         cwd,
+        closed_reason,
     };
     paths::ensure_dirs()?;
     let rec_path = paths::recording_file(&active.rec_id)?;
@@ -227,12 +274,22 @@ fn stop_one(active: &ActiveRec) -> Result<()> {
     });
 
     let plural = if steps == 1 { "" } else { "s" };
-    println!(
-        "{} stopped \"{}\" — {steps} step{plural}",
-        crate::style::accent("■"),
-        active.name
-    );
-    println!("  turn it into a skill:  galdr distill");
+    match &recording.closed_reason {
+        // A reaped recording is junk by definition — no distill invitation.
+        Some(reason) => println!(
+            "{} closed \"{}\" — {steps} step{plural} ({reason})",
+            crate::style::dim("■"),
+            active.name
+        ),
+        None => {
+            println!(
+                "{} stopped \"{}\" — {steps} step{plural}",
+                crate::style::accent("■"),
+                active.name
+            );
+            println!("  turn it into a skill:  galdr distill");
+        }
+    }
     Ok(())
 }
 
@@ -365,7 +422,38 @@ mod tests {
             ended_at: "2026-01-01T00:01:00Z".into(),
             steps: 3,
             cwd: None,
+            closed_reason: None,
         }
+    }
+
+    fn active(id: &str, started_at: &str) -> ActiveRec {
+        ActiveRec {
+            rec_id: id.into(),
+            name: "t".into(),
+            started_at: started_at.into(),
+            transcript_path: None,
+            origin_cwd: None,
+            bound_session: None,
+        }
+    }
+
+    #[test]
+    fn staleness_follows_started_at_when_no_span_exists() {
+        // The rec_id resolves to a span path that does not exist, so `started_at`
+        // is the activity signal: a week-old start is stale, a fresh one is not.
+        let old = active("01TESTSTALE0000000000000000", "2026-01-01T00:00:00Z");
+        assert!(is_stale(&old, 24));
+        let fresh = active("01TESTFRESH0000000000000000", &now_rfc3339());
+        assert!(!is_stale(&fresh, 24));
+    }
+
+    #[test]
+    fn staleness_zero_disables_and_unknown_activity_is_never_stale() {
+        let old = active("01TESTSTALE0000000000000000", "2026-01-01T00:00:00Z");
+        assert!(!is_stale(&old, 0), "0 disables staleness");
+        // An unparseable started_at (and no span) means unknown activity: not stale.
+        let unknown = active("01TESTUNKNOWN00000000000000", "not-a-timestamp");
+        assert!(!is_stale(&unknown, 24));
     }
 
     // Newest first, the way `all_recordings` returns them.

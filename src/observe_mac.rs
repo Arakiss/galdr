@@ -337,6 +337,7 @@ pub fn mac_stop() -> Result<()> {
         ended_at: record::now_rfc3339(),
         steps: events.len(),
         cwd: session.cwd.clone(),
+        closed_reason: None,
     };
     write_recording_files(&recording, &events)?;
     let _ = std::fs::remove_file(paths::mac_observe_active()?);

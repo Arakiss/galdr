@@ -92,6 +92,7 @@ pub fn synthetic(name: String, fixture: ObserveFixture) -> Result<()> {
         cwd: std::env::current_dir()
             .ok()
             .map(|path| path.display().to_string()),
+        closed_reason: None,
     };
 
     write_recording_files(&recording, &events)?;
@@ -266,6 +267,7 @@ pub fn browser_stop() -> Result<()> {
         ended_at: record::now_rfc3339(),
         steps: events.len(),
         cwd: session.cwd.clone(),
+        closed_reason: None,
     };
     write_recording_files(&recording, &events)?;
     let _ = std::fs::remove_file(paths::browser_observe_active()?);
