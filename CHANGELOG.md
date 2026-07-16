@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 While the version is below `1.0.0`, breaking changes may land in minor releases.
 
+## [0.18.0](https://github.com/Arakiss/galdr/compare/v0.17.0...v0.18.0) (2026-07-16)
+
+
+### Features
+
+* on-policy replay judgments ([87eaea7](https://github.com/Arakiss/galdr/commit/87eaea79d444ed03fcf8f81966cec5b1ddbc2b55))
+* support on-policy replay judgments ([898fbc2](https://github.com/Arakiss/galdr/commit/898fbc21b73fe0f2b4c3a76dc1e40dc586554c75))
+
+
+### Bug fixes
+
+* expire stale recordings instead of keeping them active forever ([3907c72](https://github.com/Arakiss/galdr/commit/3907c72e235f456dc2ac2e94dbf9aa2ebace70f7))
+* expire stale recordings instead of keeping them active forever ([9bdc7fe](https://github.com/Arakiss/galdr/commit/9bdc7fe37ac8ba711c2e2882ba29d13ca6e3aee2))
+
+
+### Documentation
+
+* add galdr roadmap for Codex R&R parity ([ee90cab](https://github.com/Arakiss/galdr/commit/ee90cab19eed6b4ba939c1e25d1ca9f473764bb3))
+
 ## [Unreleased]
 
 ### Features
