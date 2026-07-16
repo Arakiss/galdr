@@ -1585,6 +1585,7 @@ mod tests {
             ended_at: "2026-06-19T00:01:00Z".into(),
             steps,
             cwd: Some("/tmp".into()),
+            closed_reason: None,
         }
     }
 

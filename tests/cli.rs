@@ -2700,9 +2700,16 @@ fn legacy_active_flag_is_migrated_without_losing_the_recording() {
     // survive the upgrade: it is folded into active.d/ and keeps recording.
     let sb = Sandbox::new();
     std::fs::create_dir_all(sb.home().join(".galdr")).unwrap();
+    // A fresh started_at: a stale recording would (correctly) stop taking
+    // session-less events, and this test is about migration, not staleness.
+    let started_at = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
     std::fs::write(
         sb.home().join(".galdr/active"),
-        r#"{"rec_id":"01LEGACY0000000000000000AA","name":"legacy-run","started_at":"2026-07-02T00:00:00Z","origin_cwd":null,"bound_session":null}"#,
+        format!(
+            r#"{{"rec_id":"01LEGACY0000000000000000AA","name":"legacy-run","started_at":"{started_at}","origin_cwd":null,"bound_session":null}}"#
+        ),
     )
     .unwrap();
 
@@ -2725,4 +2732,41 @@ fn legacy_active_flag_is_migrated_without_losing_the_recording() {
     assert!(sb.hook(BASH_STATUS, false).status.success());
     assert_eq!(sb.span_lines("01LEGACY0000000000000000AA"), 1);
     assert!(sb.run(&["rec", "stop", "legacy-run"]).status.success());
+}
+
+#[test]
+fn rec_start_reaps_a_stale_recording() {
+    // A recording whose session died without `rec stop` (started long ago, no
+    // activity since) must not stay active forever: it would swallow session-less
+    // events and scare every future session away from recording. The next
+    // `rec start` closes it, with the reason on record.
+    let sb = Sandbox::new();
+    std::fs::create_dir_all(sb.home().join(".galdr/active.d")).unwrap();
+    std::fs::write(
+        sb.home()
+            .join(".galdr/active.d/01ZOMBIE0000000000000000AA.json"),
+        r#"{"rec_id":"01ZOMBIE0000000000000000AA","name":"zombie","started_at":"2026-01-01T00:00:00Z","origin_cwd":null,"bound_session":"dead-session"}"#,
+    )
+    .unwrap();
+
+    let out = stdout(&sb.run(&["rec", "start", "fresh"]));
+    assert!(out.contains("stale"), "{out}");
+    // The zombie's flag is gone; its metadata records why it closed.
+    assert!(
+        !sb.home()
+            .join(".galdr/active.d/01ZOMBIE0000000000000000AA.json")
+            .exists(),
+        "stale flag must be reaped"
+    );
+    let meta = std::fs::read_to_string(
+        sb.home()
+            .join(".galdr/recordings/01ZOMBIE0000000000000000AA.json"),
+    )
+    .unwrap();
+    assert!(meta.contains("closed_reason"), "{meta}");
+    assert!(meta.contains("stale"), "{meta}");
+    // Only the new recording remains active.
+    let status = stdout(&sb.run(&["rec", "status"]));
+    assert!(status.contains("fresh"), "{status}");
+    assert!(!status.contains("zombie"), "{status}");
 }

@@ -797,11 +797,22 @@ fn cmd_rec_status() -> anyhow::Result<()> {
         return Ok(());
     }
     let n = actives.len();
+    let stale_after_hours = config::Config::load_capture().stale_after_hours;
     println!("{n} active recording{}:", if n == 1 { "" } else { "s" });
     for active in &actives {
         let span_path = paths::span_file(&active.rec_id)?;
         let steps = span::count_events(&span_path);
         println!("  {} ({})", active.name, active.rec_id);
+        if record::is_stale(active, stale_after_hours) {
+            let hours = record::inactive_hours(active).unwrap_or_default();
+            println!(
+                "    {}",
+                style::amber(&format!(
+                    "STALE — inactive for {hours}h; it no longer captures new sessions. Close it: galdr rec stop {}",
+                    active.name
+                ))
+            );
+        }
         println!("    started_at: {}", active.started_at);
         println!("    steps: {steps}");
         if let Some(origin) = &active.origin_cwd {

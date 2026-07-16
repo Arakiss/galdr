@@ -1290,6 +1290,7 @@ mod tests {
             ended_at: "2026-06-24T00:01:00Z".into(),
             steps: 4,
             cwd: Some("/Users/someone/Projects/galdr".into()),
+            closed_reason: None,
         };
         let events = vec![
             ev(
@@ -1341,6 +1342,7 @@ mod tests {
             ended_at: "2026-06-24T00:01:00Z".into(),
             steps: 4,
             cwd: Some("/Users/someone/Projects/galdr".into()),
+            closed_reason: None,
         };
         let events = vec![
             human_browser_event(0, "human.browser.navigate", None, None),
@@ -1413,6 +1415,7 @@ mod tests {
             ended_at: "2026-06-24T00:01:00Z".into(),
             steps: 1,
             cwd: Some("/Users/someone/Projects/galdr".into()),
+            closed_reason: None,
         };
         let events = vec![human_browser_event(
             0,

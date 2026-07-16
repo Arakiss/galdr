@@ -85,7 +85,15 @@ pub fn run() -> Result<()> {
     // if any; else bind the most recent unbound recording eligible by `origin_cwd`;
     // else drop it. This keeps concurrent sessions' spans separate, so a session in
     // another project never leaks its tool calls (and payloads) into another's span.
-    let route = route_event(&actives, input.session_id.as_deref(), input.cwd.as_deref());
+    // Stale recordings (a forgotten `rec stop`) neither take session-less events nor
+    // bind new sessions — only their own bound session still reaches them.
+    let capture = config::Config::load_capture();
+    let route = route_event(
+        &actives,
+        input.session_id.as_deref(),
+        input.cwd.as_deref(),
+        |a| record::is_stale(a, capture.stale_after_hours),
+    );
     let Route::Record { rec_id, bind } = route else {
         return Ok(());
     };
@@ -110,7 +118,6 @@ pub fn run() -> Result<()> {
         human: None,
     };
 
-    let capture = config::Config::load_capture();
     if denied_by_capture_policy(&event, &capture) {
         return Ok(());
     }
@@ -193,13 +200,20 @@ enum Route {
 /// 3. A session-less event goes to the most recent active recording (harnesses that
 ///    omit the id, and the single-recording case, keep working).
 /// 4. Anything else is dropped.
+///
+/// `is_stale` marks recordings whose owner went silent (a forgotten `rec stop`).
+/// A stale recording is invisible to rules 2 and 3 — it must not swallow
+/// session-less events nor claim a new session — but rule 1 still applies: the
+/// bound session's own activity always records, and the append refreshes the span's
+/// mtime, so a recording whose session comes back to life un-stales itself.
 fn route_event(
     actives: &[record::ActiveRec],
     session_id: Option<&str>,
     cwd: Option<&str>,
+    is_stale: impl Fn(&record::ActiveRec) -> bool,
 ) -> Route {
     let Some(sid) = session_id else {
-        return match actives.first() {
+        return match actives.iter().find(|a| !is_stale(a)) {
             Some(a) => Route::Record {
                 rec_id: a.rec_id.clone(),
                 bind: None,
@@ -218,7 +232,7 @@ fn route_event(
     }
     if let Some(a) = actives
         .iter()
-        .find(|a| a.bound_session.is_none() && cwd_ok(a.origin_cwd.as_deref(), cwd))
+        .find(|a| a.bound_session.is_none() && !is_stale(a) && cwd_ok(a.origin_cwd.as_deref(), cwd))
     {
         return Route::Record {
             rec_id: a.rec_id.clone(),
@@ -682,7 +696,7 @@ mod tests {
     fn binds_to_the_first_session_under_origin() {
         let actives = [mk("01A", Some("/proj/galdr"), None)];
         assert_records(
-            route_event(&actives, Some("sessA"), Some("/proj/galdr/sub")),
+            route_event(&actives, Some("sessA"), Some("/proj/galdr/sub"), |_| false),
             "01A",
             Some("sessA"),
         );
@@ -692,7 +706,7 @@ mod tests {
     fn foreign_session_in_another_dir_is_skipped_before_binding() {
         let actives = [mk("01A", Some("/proj/galdr"), None)];
         assert!(matches!(
-            route_event(&actives, Some("sessB"), Some("/proj/eldr")),
+            route_event(&actives, Some("sessB"), Some("/proj/eldr"), |_| false),
             Route::Skip
         ));
     }
@@ -702,13 +716,13 @@ mod tests {
         let actives = [mk("01A", Some("/proj/galdr"), Some("sessA"))];
         // The bound session records without re-binding.
         assert_records(
-            route_event(&actives, Some("sessA"), Some("/anywhere")),
+            route_event(&actives, Some("sessA"), Some("/anywhere"), |_| false),
             "01A",
             None,
         );
         // Another session cannot claim the already-bound recording.
         assert!(matches!(
-            route_event(&actives, Some("sessB"), Some("/proj/galdr")),
+            route_event(&actives, Some("sessB"), Some("/proj/galdr"), |_| false),
             Route::Skip
         ));
     }
@@ -717,23 +731,27 @@ mod tests {
     fn sessionless_events_record_to_the_newest_active() {
         // Harnesses that omit session_id, and the single-recording case, keep working.
         let unbound = [mk("01A", Some("/proj/galdr"), None)];
-        assert_records(route_event(&unbound, None, Some("/tmp")), "01A", None);
+        assert_records(
+            route_event(&unbound, None, Some("/tmp"), |_| false),
+            "01A",
+            None,
+        );
         let bound = [mk("01A", Some("/proj/galdr"), Some("sessA"))];
-        assert_records(route_event(&bound, None, None), "01A", None);
+        assert_records(route_event(&bound, None, None, |_| false), "01A", None);
         // With several active, a session-less event goes to the newest (01C).
         let many = [
             mk("01C", None, None),
             mk("01B", None, Some("sessB")),
             mk("01A", None, None),
         ];
-        assert_records(route_event(&many, None, None), "01C", None);
+        assert_records(route_event(&many, None, None, |_| false), "01C", None);
     }
 
     #[test]
     fn no_origin_binds_to_any_first_session() {
         let actives = [mk("01A", None, None)];
         assert_records(
-            route_event(&actives, Some("sessA"), Some("/anywhere")),
+            route_event(&actives, Some("sessA"), Some("/anywhere"), |_| false),
             "01A",
             Some("sessA"),
         );
@@ -748,18 +766,18 @@ mod tests {
             mk("01A", Some("/projA"), Some("sessA")),
         ];
         assert_records(
-            route_event(&actives, Some("sessA"), Some("/projA")),
+            route_event(&actives, Some("sessA"), Some("/projA"), |_| false),
             "01A",
             None,
         );
         assert_records(
-            route_event(&actives, Some("sessB"), Some("/projB")),
+            route_event(&actives, Some("sessB"), Some("/projB"), |_| false),
             "01B",
             None,
         );
         // A third, unknown session with no unbound recording to claim is dropped.
         assert!(matches!(
-            route_event(&actives, Some("sessC"), Some("/projC")),
+            route_event(&actives, Some("sessC"), Some("/projC"), |_| false),
             Route::Skip
         ));
     }
@@ -774,7 +792,7 @@ mod tests {
             mk("01A", Some("/other"), Some("old")),
         ];
         assert_records(
-            route_event(&actives, Some("sessNew"), Some("/proj/x")),
+            route_event(&actives, Some("sessNew"), Some("/proj/x"), |_| false),
             "01C",
             Some("sessNew"),
         );
@@ -786,9 +804,40 @@ mod tests {
         // elsewhere must not bind it (no stealing across directories).
         let actives = [mk("01A", Some("/projA"), None)];
         assert!(matches!(
-            route_event(&actives, Some("sessB"), Some("/projB")),
+            route_event(&actives, Some("sessB"), Some("/projB"), |_| false),
             Route::Skip
         ));
+    }
+
+    #[test]
+    fn stale_recordings_neither_take_sessionless_events_nor_bind_new_sessions() {
+        let actives = [mk("01C", None, None), mk("01B", None, None)];
+        let newest_is_stale = |a: &ActiveRec| a.rec_id == "01C";
+        // A session-less event skips the stale newest and lands on the next fresh one.
+        assert_records(
+            route_event(&actives, None, None, newest_is_stale),
+            "01B",
+            None,
+        );
+        // A new session cannot bind a stale recording either: the fresh one claims it.
+        assert_records(
+            route_event(&actives, Some("s1"), None, newest_is_stale),
+            "01B",
+            Some("s1"),
+        );
+        // Everything stale → the event is dropped, not appended to a zombie.
+        let all_stale = [mk("01C", None, None)];
+        assert!(matches!(
+            route_event(&all_stale, None, None, |_| true),
+            Route::Skip
+        ));
+        // But the bound owner still records: its own activity un-stales the span.
+        let bound = [mk("01A", None, Some("sessA"))];
+        assert_records(
+            route_event(&bound, Some("sessA"), None, |_| true),
+            "01A",
+            None,
+        );
     }
 
     #[test]

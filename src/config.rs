@@ -60,10 +60,21 @@ pub struct CaptureConfig {
     /// the skill, not part of it.
     #[serde(default)]
     pub keep_frames: bool,
+    /// Hours of inactivity after which an active recording is considered stale: the
+    /// sensor stops routing session-less events to it and refuses to bind new
+    /// sessions, `rec status`/`doctor` flag it, and `rec start` auto-closes it. A
+    /// forgotten `rec stop` must not leave a recording active forever. `0` disables
+    /// staleness entirely.
+    #[serde(default = "default_stale_after_hours")]
+    pub stale_after_hours: u64,
 }
 
 fn default_strip_screenshots() -> bool {
     true
+}
+
+fn default_stale_after_hours() -> u64 {
+    24
 }
 
 impl Default for CaptureConfig {
@@ -74,6 +85,7 @@ impl Default for CaptureConfig {
             max_response_chars: None,
             strip_screenshots: true,
             keep_frames: false,
+            stale_after_hours: default_stale_after_hours(),
         }
     }
 }
