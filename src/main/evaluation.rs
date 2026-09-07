@@ -19,7 +19,7 @@ fn cmd_outcome(action: OutcomeAction) -> anyhow::Result<()> {
             manual_interventions,
             notes,
         } => {
-            let rec_id = resolve_or_exit(rec_id.as_deref());
+            let rec_id = resolve_event_or_exit(rec_id.as_deref());
             let event = outcome::record_usage(outcome::UsageInput {
                 skill_name: skill,
                 rec_id,
@@ -124,7 +124,7 @@ fn cmd_regress(action: RegressAction) -> anyhow::Result<()> {
             case_label,
             notes,
         } => {
-            let rec_id = record::resolve_ref(Some(&rec_id))?;
+            let rec_id = record::resolve_event_ref(Some(&rec_id))?;
             let event = regression::record_base_case(regression::BaseCaseInput {
                 skill_name: skill,
                 rec_id,

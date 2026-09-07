@@ -20,6 +20,19 @@ fn resolve_or_exit(reference: Option<&str>) -> String {
     }
 }
 
+/// Like [`resolve_or_exit`] for evaluation events: prefers the active recording, so an
+/// outcome labelled while a recording is live lands on that recording, not on the last
+/// closed one.
+fn resolve_event_or_exit(reference: Option<&str>) -> String {
+    match record::resolve_event_ref(reference) {
+        Ok(id) => id,
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// `galdr` with no subcommand: a friendly home screen for a human — where you are
 /// (active recording, what you've collected) and where to go next. Styled for a
 /// terminal, plain for a pipe.

@@ -391,6 +391,43 @@ fn resolve_in(recordings: &[Recording], reference: Option<&str>) -> Result<Strin
     bail!("no recording matches `{reference}` — run `galdr list` to see your recordings.");
 }
 
+/// Resolves a reference for an **evaluation event** (`outcome usage`, `regress pin`,
+/// `judge import`): the recording the event belongs to is usually the one being
+/// recorded right now, so active recordings are considered first. `None` resolves to
+/// the newest active recording when one exists, else to the newest closed one; a given
+/// reference matches an active recording (id, unique prefix, or name) before falling
+/// back to the closed set. Commands that need a closed recording's steps on disk
+/// (`show`, `distill`, `export`) keep using [`resolve_ref`].
+pub fn resolve_event_ref(reference: Option<&str>) -> Result<String> {
+    resolve_event_in(&read_active_all(), &all_recordings(), reference)
+}
+
+/// The pure matching behind [`resolve_event_ref`]; separated for unit tests.
+fn resolve_event_in(
+    actives: &[ActiveRec],
+    recordings: &[Recording],
+    reference: Option<&str>,
+) -> Result<String> {
+    let reference = reference.map(str::trim).filter(|s| !s.is_empty());
+    match reference {
+        None => {
+            // ULIDs sort by time: the max rec_id is the newest active recording.
+            if let Some(newest) = actives.iter().max_by(|a, b| a.rec_id.cmp(&b.rec_id)) {
+                return Ok(newest.rec_id.clone());
+            }
+            resolve_in(recordings, None)
+        }
+        Some(reference) => {
+            if !actives.is_empty()
+                && let Ok(active) = resolve_active(actives, reference)
+            {
+                return Ok(active.rec_id);
+            }
+            resolve_in(recordings, Some(reference))
+        }
+    }
+}
+
 /// Lists closed recordings, newest first (the rec_id is a ULID, time-sortable).
 pub fn list() -> Result<()> {
     let recordings = all_recordings();
@@ -463,6 +500,34 @@ mod tests {
             rec("01KW9Z00000000000000000001", "ship-preview"),
             rec("01KW9A00000000000000000000", "weekly-report"),
         ]
+    }
+
+    #[test]
+    fn event_ref_prefers_the_active_recording() {
+        let actives = vec![
+            active("01KW9Z00000000000000000009", "2026-01-01T00:00:00Z"),
+            active("01KW9Z00000000000000000010", "2026-01-01T00:05:00Z"),
+        ];
+        // None → newest active, not the newest closed one.
+        assert_eq!(
+            resolve_event_in(&actives, &fixture(), None).unwrap(),
+            "01KW9Z00000000000000000010"
+        );
+        // An active id (or prefix) resolves while the recording is still live.
+        assert_eq!(
+            resolve_event_in(&actives, &fixture(), Some("01KW9Z00000000000000000009")).unwrap(),
+            "01KW9Z00000000000000000009"
+        );
+        // A closed reference still resolves when it matches no active recording.
+        assert_eq!(
+            resolve_event_in(&actives, &fixture(), Some("ship-preview")).unwrap(),
+            "01KW9Z00000000000000000001"
+        );
+        // No active recording → same behaviour as resolve_ref.
+        assert_eq!(
+            resolve_event_in(&[], &fixture(), None).unwrap(),
+            "01KW9Z00000000000000000002"
+        );
     }
 
     #[test]
