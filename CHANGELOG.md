@@ -9,6 +9,18 @@ While the version is below `1.0.0`, breaking changes may land in minor releases.
 ## [0.18.1](https://github.com/Arakiss/galdr/compare/v0.18.0...v0.18.1) (2026-09-07)
 
 
+### Bug fixes
+
+* **outcome:** resolve the active recording first for evaluation events ([699663b](https://github.com/Arakiss/galdr/commit/699663b8739d4ad0ea3574ebcc6a2f2bdd230db1))
+
+
+### Refactor
+
+* split oversized Rust modules ([13a4814](https://github.com/Arakiss/galdr/commit/13a481419fc3851cb0ce76336a95302a2c95a47f))
+
+## [0.18.1](https://github.com/Arakiss/galdr/compare/v0.18.0...v0.18.1) (2026-09-07)
+
+
 ### Bug Fixes
 
 * **outcome:** `outcome usage` and `regress pin` resolve the **active** recording first: with no `--rec` they attach to the recording being made now instead of the last closed one, and an active rec_id/prefix/name no longer fails with "no recording matches" ([resolve_event_ref](src/record.rs)).
