@@ -1,3 +1,6 @@
+> **Archived on 2026-10-26.**
+> galdr recorded agent sessions and distilled them into reusable skills. It was retired in September 2026: the recordings produced too few skills to justify keeping it running.
+
 <p align="center">
   <img src="assets/banner.svg" alt="galdr — Record & Replay for agent skills" width="100%">
 </p>
